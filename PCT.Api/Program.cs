@@ -5,6 +5,8 @@ using System.Security.Cryptography;
 using ImageMagick;
 using PCT.Core; 
 
+//테스트용 주석
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
