@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PCT - Image to Guitar Tab</title>
+<style>
+  :root {
+    --bg: #18191b;
+    --panel: #222428;
+    --panel-2: #2b2e34;
+    --border: #3b3f47;
+    --text: #eceff3;
+    --muted: #a7adb7;
+    --faint: #6e7580;
+    --accent: #3f8cff;
+    --accent-2: #256bd1;
+    --good: #5bbf7a;
+    --warn: #d4aa45;
+    --bad: #ef6666;
+    --note: #336fc4;
+    --open: #2d713f;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  button, input { font: inherit; }
+  .app { height: 100%; display: grid; grid-template-rows: 50px 1fr 30px; }
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { font-weight: 700; letter-spacing: .2px; white-space: nowrap; }
+  .brand span { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .file-name {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-2);
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .btn {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel-2);
+    color: var(--text);
+    padding: 7px 13px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:hover { background: #353941; }
+  .btn.primary { background: var(--accent-2); border-color: var(--accent); color: white; }
+  .btn.primary:hover { background: var(--accent); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  #fileInput { display: none; }
+
+  .main { min-height: 0; display: grid; grid-template-columns: 238px 1fr; }
+  .sidebar {
+    min-height: 0;
+    overflow: auto;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+  }
+  .section { padding: 15px 16px; border-bottom: 1px solid var(--border); }
+  .section h2 {
+    margin: 0 0 11px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--faint);
+  }
+  .stat, .tuning-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 0;
+  }
+  .stat span:first-child, .tuning-row span:first-child { color: var(--muted); }
+  .stat strong { font-weight: 700; }
+  .stat strong.warn { color: var(--warn); }
+  .slider { margin: 10px 0 14px; }
+  .slider label { display: flex; justify-content: space-between; color: var(--muted); margin-bottom: 5px; }
+  .slider label strong { color: var(--text); }
+  input[type=range] {
+    width: 100%;
+    appearance: none;
+    height: 3px;
+    border-radius: 2px;
+    background: #474c55;
+    outline: 0;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+
+  .content { min-width: 0; min-height: 0; display: grid; grid-template-rows: 42px 1fr; }
+  .tabs { display: flex; gap: 2px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  .tab {
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    padding: 0 18px;
+    cursor: pointer;
+  }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .view { min-height: 0; overflow: auto; padding: 18px; display: none; }
+  .view.active { display: block; }
+
+  .empty, .loading {
+    height: 100%;
+    min-height: 300px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--muted);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+  }
+  .empty.marked { border-color: var(--accent); background: rgba(63, 140, 255, .06); }
+  .empty-icon { font-size: 34px; line-height: 1; color: var(--faint); }
+  .loading { display: none; border-style: solid; background: var(--panel); }
+  .spinner {
+    width: 22px;
+    height: 22px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .75s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .score {
+    display: none;
+    min-width: 900px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 22px 14px;
+  }
+  .system { margin-bottom: 42px; }
+  .string-rows { display: grid; grid-template-rows: repeat(6, 28px); }
+  .string-row { display: flex; align-items: center; }
+  .string-label {
+    width: 24px;
+    margin-right: 8px;
+    text-align: right;
+    color: var(--muted);
+    font-family: Consolas, monospace;
+    font-weight: 700;
+  }
+  .track { position: relative; flex: 1; height: 28px; display: flex; align-items: center; }
+  .line { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: #5a606a; }
+  .bar { position: absolute; top: 0; bottom: 0; width: 1.5px; background: #737a86; z-index: 2; }
+  .cell {
+    position: relative;
+    z-index: 1;
+    width: 36px;
+    height: 28px;
+    flex: 0 0 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .fret {
+    min-width: 20px;
+    padding: 2px 5px;
+    border-radius: 5px;
+    background: var(--note);
+    color: white;
+    text-align: center;
+    font-family: Consolas, monospace;
+    font-weight: 700;
+    box-shadow: 0 1px 3px rgba(0,0,0,.35);
+  }
+  .fret.open { background: var(--open); }
+  .system-index { margin-top: 5px; padding-left: 32px; color: var(--faint); font-size: 11px; }
+
+  .preview-img {
+    display: none;
+    max-width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: white;
+  }
+  .statusbar {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 0 16px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    color: var(--faint);
+    font-size: 11px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .status { display: flex; align-items: center; gap: 7px; }
+  .status.ok { color: var(--good); }
+  .status.bad { color: var(--bad); }
+  .grow { margin-left: auto; }
+  ::-webkit-scrollbar { width: 7px; height: 7px; }
+  ::-webkit-scrollbar-thumb { background: #484d56; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">PCT <span>Image to Guitar Tab</span></div>
+    <button class="btn" id="chooseBtn">PNG 선택</button>
+    <input id="fileInput" type="file" accept=".png,image/png,.jpg,.jpeg,image/jpeg,.pdf,.xml,.musicxml,.mxl">
+    <div class="file-name" id="fileName">선택된 파일 없음</div>
+    <button class="btn primary" id="downloadBtn" disabled>타브 PNG 저장</button>
+    <button class="btn" id="consoleBtn" disabled>텍스트 타브</button>
+  </header>
+
+  <main class="main">
+    <aside class="sidebar">
+      <section class="section">
+        <h2>파일 정보</h2>
+        <div class="stat"><span>박자</span><strong id="beatCount">-</strong></div>
+        <div class="stat"><span>음표</span><strong id="noteCount">-</strong></div>
+        <div class="stat"><span>화음 박자</span><strong id="chordCount">-</strong></div>
+        <div class="stat"><span>누락 음표</span><strong class="warn" id="droppedCount">-</strong></div>
+      </section>
+
+      <section class="section">
+        <h2>변환 설정</h2>
+        <div class="slider">
+          <label>최대 프렛 범위 <strong id="spanValue">5</strong></label>
+          <input id="spanSlider" type="range" min="2" max="10" value="5">
+        </div>
+        <div class="slider">
+          <label>하이 프렛 기준 <strong id="highValue">9</strong></label>
+          <input id="highSlider" type="range" min="5" max="20" value="9">
+        </div>
+        <div class="slider">
+          <label>손 이동 가중치 <strong id="moveValue">2.5</strong></label>
+          <input id="moveSlider" type="range" min="0.5" max="6" step="0.5" value="2.5">
+        </div>
+        <button class="btn primary" id="reconvertBtn" disabled style="width:100%">다시 변환</button>
+      </section>
+
+      <section class="section">
+        <h2>튜닝</h2>
+        <div class="tuning-row"><span>1번줄</span><strong>e</strong></div>
+        <div class="tuning-row"><span>2번줄</span><strong>B</strong></div>
+        <div class="tuning-row"><span>3번줄</span><strong>G</strong></div>
+        <div class="tuning-row"><span>4번줄</span><strong>D</strong></div>
+        <div class="tuning-row"><span>5번줄</span><strong>A</strong></div>
+        <div class="tuning-row"><span>6번줄</span><strong>E</strong></div>
+      </section>
+    </aside>
+
+    <section class="content">
+      <nav class="tabs">
+        <button class="tab active" data-view="scoreView">타브</button>
+        <button class="tab" data-view="sourceView">원본</button>
+        <button class="tab" data-view="pngView">PNG</button>
+      </nav>
+
+      <div class="view active" id="scoreView">
+        <div class="empty" id="dropZone">
+          <div class="empty-icon">+</div>
+          <strong>PNG 악보를 선택하세요</strong>
+        </div>
+        <div class="loading" id="loading"><div class="spinner"></div><span>변환 중</span></div>
+        <div class="score" id="scoreArea"></div>
+      </div>
+
+      <div class="view" id="sourceView">
+        <div class="empty" id="sourceEmpty"><strong>원본 미리보기</strong></div>
+        <img class="preview-img" id="sourcePreview" alt="원본 악보">
+      </div>
+
+      <div class="view" id="pngView">
+        <div class="loading" id="pngLoading"><div class="spinner"></div><span>PNG 생성 중</span></div>
+        <div class="empty" id="pngEmpty"><strong>타브 PNG 미리보기</strong></div>
+        <img class="preview-img" id="tabPreview" alt="타브 PNG">
+      </div>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <div class="status" id="status"><span class="dot"></span><span>대기 중</span></div>
+    <span class="grow" id="statusBeats">-</span>
+    <span id="statusNotes">-</span>
+  </footer>
+</div>
+
+<script>
+const STRING_NAMES = ['e', 'B', 'G', 'D', 'A', 'E'];
+let currentFile = null;
+let currentResult = null;
+let tabPngUrl = null;
+
+const $ = id => document.getElementById(id);
+
+function clearTabPngPreview() {
+  if (tabPngUrl) {
+    URL.revokeObjectURL(tabPngUrl);
+    tabPngUrl = null;
+  }
+  $('tabPreview').removeAttribute('src');
+  $('tabPreview').style.display = 'none';
+  $('pngEmpty').style.display = 'flex';
+}
+
+$('chooseBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', e => selectFile(e.target.files[0]));
+$('reconvertBtn').addEventListener('click', () => currentFile && convertFile());
+$('downloadBtn').addEventListener('click', downloadPng);
+$('consoleBtn').addEventListener('click', showTextTab);
+
+for (const [slider, label, format] of [
+  ['spanSlider', 'spanValue', v => v],
+  ['highSlider', 'highValue', v => v],
+  ['moveSlider', 'moveValue', v => Number(v).toFixed(1)]
+]) {
+  $(slider).addEventListener('input', e => $(label).textContent = format(e.target.value));
+}
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    tab.classList.add('active');
+    $(tab.dataset.view).classList.add('active');
+    if (tab.dataset.view === 'pngView' && currentFile && !tabPngUrl) loadPngPreview();
+  });
+});
+
+for (const area of [$('dropZone'), $('scoreView')]) {
+  area.addEventListener('dragover', e => {
+    e.preventDefault();
+    $('dropZone').classList.add('marked');
+  });
+  area.addEventListener('dragleave', () => $('dropZone').classList.remove('marked'));
+  area.addEventListener('drop', e => {
+    e.preventDefault();
+    $('dropZone').classList.remove('marked');
+    selectFile(e.dataTransfer.files[0]);
+  });
+}
+
+function selectFile(file) {
+  if (!file) return;
+  currentFile = file;
+  currentResult = null;
+  clearTabPngPreview();
+  $('fileName').textContent = file.name;
+  $('downloadBtn').disabled = true;
+  $('consoleBtn').disabled = true;
+  $('reconvertBtn').disabled = true;
+  showSourcePreview(file);
+  convertFile();
+}
+
+function showSourcePreview(file) {
+  const isImage = file.type.startsWith('image/');
+  $('sourcePreview').style.display = isImage ? 'block' : 'none';
+  $('sourceEmpty').style.display = isImage ? 'none' : 'flex';
+  if (isImage) $('sourcePreview').src = URL.createObjectURL(file);
+}
+
+function formData() {
+  const fd = new FormData();
+  fd.append('file', currentFile);
+  fd.append('maxFingerSpan', $('spanSlider').value);
+  fd.append('highFretThreshold', $('highSlider').value);
+  fd.append('handMoveCost', $('moveSlider').value);
+  return fd;
+}
+
+async function convertFile() {
+  clearTabPngPreview();
+  showLoading(true);
+  setStatus('변환 중', '');
+
+  try {
+    const res = await fetch('/api/convert', { method: 'POST', body: formData() });
+    if (!res.ok) throw new Error(await res.text());
+
+    currentResult = await res.json();
+    renderScore(currentResult);
+    updateStats(currentResult);
+    $('downloadBtn').disabled = false;
+    $('consoleBtn').disabled = false;
+    $('reconvertBtn').disabled = false;
+    setStatus('변환 완료', 'ok');
+    if ($('pngView').classList.contains('active')) await loadPngPreview();
+  } catch (err) {
+    showLoading(false);
+    $('dropZone').style.display = 'flex';
+    $('dropZone').querySelector('strong').textContent = err.message;
+    setStatus('변환 실패', 'bad');
+  }
+}
+
+function renderScore(data) {
+  const area = $('scoreArea');
+  area.innerHTML = '';
+  const perSystem = 24;
+  const systems = Math.max(1, Math.ceil(data.groups.length / perSystem));
+
+  for (let sys = 0; sys < systems; sys++) {
+    const start = sys * perSystem;
+    const end = Math.min(start + perSystem, data.groups.length);
+    const systemGroups = data.groups.slice(start, end);
+    const systemEl = document.createElement('div');
+    systemEl.className = 'system';
+    const rows = document.createElement('div');
+    rows.className = 'string-rows';
+
+    for (let s = 0; s < 6; s++) {
+      const row = document.createElement('div');
+      row.className = 'string-row';
+      row.innerHTML = `<div class="string-label">${STRING_NAMES[s]}</div>`;
+      const track = document.createElement('div');
+      track.className = 'track';
+      track.innerHTML = '<div class="line"></div><div class="bar" style="left:0"></div><div class="bar" style="right:0"></div>';
+
+      systemGroups.forEach(group => {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        const pos = group.positions.find(p => p.stringIndex === s);
+        if (!group.isRest && pos) {
+          const fret = document.createElement('div');
+          fret.className = 'fret' + (pos.fret === 0 ? ' open' : '');
+          fret.textContent = pos.fret;
+          cell.appendChild(fret);
+        }
+        track.appendChild(cell);
+      });
+
+      row.appendChild(track);
+      rows.appendChild(row);
+    }
+
+    systemEl.appendChild(rows);
+    const index = document.createElement('div');
+    index.className = 'system-index';
+    index.textContent = `${start + 1} - ${end}`;
+    systemEl.appendChild(index);
+    area.appendChild(systemEl);
+  }
+
+  showLoading(false);
+  $('dropZone').style.display = 'none';
+  area.style.display = 'block';
+}
+
+function updateStats(data) {
+  $('beatCount').textContent = data.beatCount;
+  $('noteCount').textContent = data.noteCount;
+  $('chordCount').textContent = data.chordCount;
+  $('droppedCount').textContent = data.droppedCount;
+  $('statusBeats').textContent = `${data.beatCount} 박자`;
+  $('statusNotes').textContent = `${data.noteCount} 음표`;
+}
+
+async function loadPngPreview() {
+  $('pngLoading').style.display = 'flex';
+  $('pngEmpty').style.display = 'none';
+  $('tabPreview').style.display = 'none';
+
+  try {
+    const res = await fetch('/api/render-png', { method: 'POST', body: formData() });
+    if (!res.ok) throw new Error(await res.text());
+    const blob = await res.blob();
+    if (tabPngUrl) URL.revokeObjectURL(tabPngUrl);
+    tabPngUrl = URL.createObjectURL(blob);
+    $('tabPreview').src = tabPngUrl;
+    $('tabPreview').style.display = 'block';
+  } catch (err) {
+    $('pngEmpty').style.display = 'flex';
+    $('pngEmpty').querySelector('strong').textContent = err.message;
+  } finally {
+    $('pngLoading').style.display = 'none';
+  }
+}
+
+async function downloadPng() {
+  if (!tabPngUrl) await loadPngPreview();
+  if (!tabPngUrl) return;
+  const a = document.createElement('a');
+  a.href = tabPngUrl;
+  a.download = `${currentResult?.title || 'tab'}-tab.png`;
+  a.click();
+}
+
+function showTextTab() {
+  if (!currentResult) return;
+  const lines = [];
+  lines.push(`${currentResult.beatCount} beats, ${currentResult.noteCount} notes, dropped ${currentResult.droppedCount}`);
+  lines.push('');
+
+  for (let start = 0; start < currentResult.groups.length; start += 16) {
+    const end = Math.min(start + 16, currentResult.groups.length);
+    for (let s = 0; s < 6; s++) {
+      let row = STRING_NAMES[s] + '|';
+      for (let i = start; i < end; i++) {
+        const group = currentResult.groups[i];
+        const pos = group.positions.find(p => p.stringIndex === s);
+        row += pos ? '-' + String(pos.fret).padEnd(3, '-') : '----';
+      }
+      lines.push(row + '|');
+    }
+    lines.push('');
+  }
+
+  const w = window.open('', '_blank', 'width=760,height=540');
+  w.document.write(`<pre style="margin:0;min-height:100%;background:#18191b;color:#eceff3;padding:20px;font:13px Consolas,monospace;white-space:pre">${lines.join('\n')}</pre>`);
+}
+
+function showLoading(show) {
+  $('loading').style.display = show ? 'flex' : 'none';
+  $('scoreArea').style.display = show ? 'none' : $('scoreArea').style.display;
+  $('dropZone').style.display = show ? 'none' : $('dropZone').style.display;
+}
+
+function setStatus(text, state) {
+  const el = $('status');
+  el.className = 'status' + (state ? ' ' + state : '');
+  el.querySelector('span:last-child').textContent = text;
+}
+</script>
+</body>
+</html>

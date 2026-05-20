@@ -1,0 +1,26 @@
+# Python 가상환경
+.venv/
+venv/
+env/
+
+# 컴파일된 파일
+*.pyc
+*.pyo
+__pycache__/
+
+# .NET / C# 빌드 결과물
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# .NET dotnet home
+.dotnet_home/
+
+# 로그 파일
+*.log
+
+# 기타
+.DS_Store
+Thumbs.db
