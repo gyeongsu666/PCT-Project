@@ -68,7 +68,7 @@ def _build_args(image_path: str, output_path: str) -> argparse.Namespace:
         output_path=output_path,
         use_tf=False,
         save_cache=False,
-        without_deskew=False,
+        without_deskew=True,
     )
 
 

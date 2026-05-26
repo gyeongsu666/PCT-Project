@@ -35,7 +35,7 @@ static async Task<string> SaveUploadAsync(IFormFile file, string extension)
 static string ConvertPdfFirstPageToPng(string pdfPath)
 {
     var pngPath = Path.ChangeExtension(pdfPath, ".png");
-    var settings = new MagickReadSettings { Density = new Density(300) };
+    var settings = new MagickReadSettings { Density = new Density(200) };
 
     using var images = new MagickImageCollection();
     images.Read(pdfPath, settings);

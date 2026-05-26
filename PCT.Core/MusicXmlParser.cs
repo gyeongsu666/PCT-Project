@@ -1,4 +1,4 @@
-using System.Xml.Linq;
+using System.Xml;
 
 namespace PCT.Core;
 
@@ -6,26 +6,70 @@ public class MusicXmlParser
 {
     public List<NoteGroup> Parse(Stream stream)
     {
-        var doc = XDocument.Load(stream);
-        return ParseDoc(doc);
+        using var reader = XmlReader.Create(stream, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
+        return ParseReader(reader);
     }
 
     public List<NoteGroup> ParseFile(string filePath)
     {
-        var doc = XDocument.Load(filePath);
-        return ParseDoc(doc);
+        using var reader = XmlReader.Create(filePath, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
+        return ParseReader(reader);
     }
 
-    private List<NoteGroup> ParseDoc(XDocument doc)
+    private List<NoteGroup> ParseReader(XmlReader reader)
     {
         var groups = new List<NoteGroup>();
         NoteGroup current = null;
 
-        foreach (var noteElem in doc.Descendants("note"))
+        while (reader.Read())
         {
-            bool isChord = noteElem.Element("chord") != null;
-            var note = ParseSingleNote(noteElem);
-            if (note == null) continue;
+            if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "note")
+                continue;
+
+            bool isChord = false;
+            bool isRest = false;
+            string step = "C";
+            int octave = 4;
+            int alter = 0;
+
+            using var noteReader = reader.ReadSubtree();
+            while (noteReader.Read())
+            {
+                if (noteReader.NodeType != XmlNodeType.Element) continue;
+
+                switch (noteReader.LocalName)
+                {
+                    case "chord":
+                        isChord = true;
+                        break;
+                    case "rest":
+                        isRest = true;
+                        break;
+                    case "step":
+                        step = noteReader.ReadElementContentAsString();
+                        break;
+                    case "octave":
+                        if (int.TryParse(noteReader.ReadElementContentAsString(), out int o))
+                            octave = o;
+                        break;
+                    case "alter":
+                        if (int.TryParse(noteReader.ReadElementContentAsString(), out int a))
+                            alter = a;
+                        break;
+                }
+            }
+
+            var note = new Note();
+            if (isRest)
+            {
+                note.IsRest = true;
+            }
+            else
+            {
+                note.Step = step;
+                note.Octave = octave;
+                note.Alter = alter;
+            }
 
             if (isChord && current != null && !current.IsRest)
             {
@@ -40,30 +84,5 @@ public class MusicXmlParser
         }
 
         return groups;
-    }
-
-    private Note ParseSingleNote(XElement noteElem)
-    {
-        var note = new Note();
-
-        if (noteElem.Element("rest") != null)
-        {
-            note.IsRest = true;
-            return note;
-        }
-
-        var pitch = noteElem.Element("pitch");
-        if (pitch == null) return null;
-
-        note.Step = pitch.Element("step")?.Value ?? "C";
-
-        if (int.TryParse(pitch.Element("octave")?.Value, out int oct))
-            note.Octave = oct;
-
-        var alterElem = pitch.Element("alter");
-        if (alterElem != null && int.TryParse(alterElem.Value, out int alter))
-            note.Alter = alter;
-
-        return note;
     }
 }
