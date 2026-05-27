@@ -266,13 +266,16 @@
       </section>
 
       <section class="section">
-        <h2>튜닝</h2>
-        <div class="tuning-row"><span>1번줄</span><strong>e</strong></div>
-        <div class="tuning-row"><span>2번줄</span><strong>B</strong></div>
-        <div class="tuning-row"><span>3번줄</span><strong>G</strong></div>
-        <div class="tuning-row"><span>4번줄</span><strong>D</strong></div>
-        <div class="tuning-row"><span>5번줄</span><strong>A</strong></div>
-        <div class="tuning-row"><span>6번줄</span><strong>E</strong></div>
+        <h2>키 조정</h2>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:4px;">
+          <button class="btn" id="keyDownBtn" style="flex:1" disabled>▼ &minus;1</button>
+          <div style="text-align:center; min-width:44px;">
+            <strong id="keyValue" style="font-size:18px;">0</strong>
+            <div style="color:var(--muted); font-size:11px; margin-top:2px;">반음</div>
+          </div>
+          <button class="btn" id="keyUpBtn" style="flex:1" disabled>▲ +1</button>
+        </div>
+        <button class="btn" id="keyResetBtn" style="width:100%; margin-top:8px;" disabled>초기화</button>
       </section>
     </aside>
 
@@ -317,6 +320,7 @@ const STRING_NAMES = ['e', 'B', 'G', 'D', 'A', 'E'];
 let currentFile = null;
 let currentResult = null;
 let tabPngUrl = null;
+let transposeSteps = 0;
 
 const $ = id => document.getElementById(id);
 
@@ -335,6 +339,28 @@ $('fileInput').addEventListener('change', e => selectFile(e.target.files[0]));
 $('reconvertBtn').addEventListener('click', () => currentFile && convertFile());
 $('downloadBtn').addEventListener('click', downloadPng);
 $('consoleBtn').addEventListener('click', showTextTab);
+
+function updateKeyDisplay() {
+  const v = transposeSteps;
+  $('keyValue').textContent = v > 0 ? `+${v}` : v;
+  $('keyResetBtn').disabled = v === 0;
+}
+
+$('keyUpBtn').addEventListener('click', () => {
+  transposeSteps++;
+  updateKeyDisplay();
+  if (currentResult) renderScore(currentResult);
+});
+$('keyDownBtn').addEventListener('click', () => {
+  transposeSteps--;
+  updateKeyDisplay();
+  if (currentResult) renderScore(currentResult);
+});
+$('keyResetBtn').addEventListener('click', () => {
+  transposeSteps = 0;
+  updateKeyDisplay();
+  if (currentResult) renderScore(currentResult);
+});
 
 for (const [slider, label, format] of [
   ['spanSlider', 'spanValue', v => v],
@@ -372,10 +398,14 @@ function selectFile(file) {
   currentFile = file;
   currentResult = null;
   clearTabPngPreview();
+  transposeSteps = 0;
+  updateKeyDisplay();
   $('fileName').textContent = file.name;
   $('downloadBtn').disabled = true;
   $('consoleBtn').disabled = true;
   $('reconvertBtn').disabled = true;
+  $('keyUpBtn').disabled = true;
+  $('keyDownBtn').disabled = true;
   showSourcePreview(file);
   convertFile();
 }
@@ -393,6 +423,7 @@ function formData() {
   fd.append('maxFingerSpan', $('spanSlider').value);
   fd.append('highFretThreshold', $('highSlider').value);
   fd.append('handMoveCost', $('moveSlider').value);
+  fd.append('transposeSteps', transposeSteps);
   return fd;
 }
 
@@ -411,6 +442,8 @@ async function convertFile() {
     $('downloadBtn').disabled = false;
     $('consoleBtn').disabled = false;
     $('reconvertBtn').disabled = false;
+    $('keyUpBtn').disabled = false;
+    $('keyDownBtn').disabled = false;
     setStatus('변환 완료', 'ok');
     if ($('pngView').classList.contains('active')) await loadPngPreview();
   } catch (err) {
@@ -449,10 +482,13 @@ function renderScore(data) {
         cell.className = 'cell';
         const pos = group.positions.find(p => p.stringIndex === s);
         if (!group.isRest && pos) {
-          const fret = document.createElement('div');
-          fret.className = 'fret' + (pos.fret === 0 ? ' open' : '');
-          fret.textContent = pos.fret;
-          cell.appendChild(fret);
+          const fretNum = pos.fret + transposeSteps;
+          if (fretNum >= 0) {
+            const fret = document.createElement('div');
+            fret.className = 'fret' + (fretNum === 0 ? ' open' : '');
+            fret.textContent = fretNum;
+            cell.appendChild(fret);
+          }
         }
         track.appendChild(cell);
       });

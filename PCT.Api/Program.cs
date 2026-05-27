@@ -165,6 +165,22 @@ static TabConverterSettings ReadSettings(IFormCollection form) => new()
         : 2.5
 };
 
+static List<TabPositionGroup> ApplyTranspose(List<TabPositionGroup> groups, int steps)
+{
+    if (steps == 0) return groups;
+    return groups.Select(g => new TabPositionGroup
+    {
+        IsRest = g.IsRest,
+        Positions = g.Positions.Select(p => new TabPosition
+        {
+            StringIndex = p.StringIndex,
+            Fret = p.Fret + steps,
+            IsUnplayable = p.IsUnplayable || (p.Fret + steps) < 0,
+            SourceNote = p.SourceNote
+        }).ToList()
+    }).ToList();
+}
+
 static object BuildConvertResult(IFormFile file, List<NoteGroup> groups, TabConverterSettings settings, List<TabPositionGroup> tabGroups)
 {
     var chordCount = groups.Count(g => !g.IsRest && g.Notes.Count > 1);
@@ -258,8 +274,10 @@ app.MapPost("/api/render-png", async (HttpRequest request) =>
         var settings = ReadSettings(form);
         var converter = new TabConverter(settings);
         var tabGroups = converter.Convert(parsed.Groups);
+        var transposeSteps = int.TryParse(form["transposeSteps"], out var ts) ? ts : 0;
+        var transposedGroups = ApplyTranspose(tabGroups, transposeSteps);
         var renderer = new TabImageRenderer();
-        var bytes = renderer.RenderToPngBytes(tabGroups, Path.GetFileNameWithoutExtension(file.FileName));
+        var bytes = renderer.RenderToPngBytes(transposedGroups, Path.GetFileNameWithoutExtension(file.FileName));
 
         return Results.File(bytes, "image/png", $"{Path.GetFileNameWithoutExtension(file.FileName)}-tab.png");
     }
