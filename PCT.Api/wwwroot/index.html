@@ -72,12 +72,17 @@
   .btn:disabled { opacity: .45; cursor: not-allowed; }
   #fileInput { display: none; }
 
+  /* Main layout */
   .main { min-height: 0; display: grid; grid-template-columns: 238px 1fr; }
+
+  /* Sidebar: 3 rows — 변환설정 | 키조정 | 기록(남은 공간) */
   .sidebar {
     min-height: 0;
-    overflow: auto;
+    display: grid;
+    grid-template-rows: auto auto 1fr;
     background: var(--panel);
     border-right: 1px solid var(--border);
+    overflow: hidden;
   }
   .section { padding: 15px 16px; border-bottom: 1px solid var(--border); }
   .section h2 {
@@ -87,16 +92,7 @@
     letter-spacing: 1px;
     color: var(--faint);
   }
-  .stat, .tuning-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 4px 0;
-  }
-  .stat span:first-child, .tuning-row span:first-child { color: var(--muted); }
-  .stat strong { font-weight: 700; }
-  .stat strong.warn { color: var(--warn); }
-  .slider { margin: 10px 0 14px; }
+  .slider { margin: 0 0 12px; }
   .slider label { display: flex; justify-content: space-between; color: var(--muted); margin-bottom: 5px; }
   .slider label strong { color: var(--text); }
   input[type=range] {
@@ -116,6 +112,90 @@
     cursor: pointer;
   }
 
+  /* 변환 기록 섹션 */
+  .history-section {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .history-header {
+    padding: 12px 16px 8px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--faint);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .history-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .history-item {
+    display: flex;
+    gap: 9px;
+    align-items: center;
+    padding: 8px 9px;
+    border-radius: 7px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+    user-select: none;
+  }
+  .history-item:hover { border-color: var(--accent); background: rgba(63,140,255,.08); }
+  .history-item.active { border-color: var(--accent); background: rgba(63,140,255,.13); }
+  .history-thumb {
+    width: 46px;
+    height: 46px;
+    border-radius: 5px;
+    background: #1a1c1f;
+    border: 1px solid var(--border);
+    object-fit: cover;
+    flex-shrink: 0;
+  }
+  .history-thumb-ph {
+    width: 46px;
+    height: 46px;
+    border-radius: 5px;
+    background: #1a1c1f;
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    color: var(--faint);
+  }
+  .history-info { flex: 1; min-width: 0; }
+  .history-name {
+    font-size: 12px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-bottom: 3px;
+  }
+  .history-meta { color: var(--muted); font-size: 11px; }
+  .history-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    color: var(--faint);
+    font-size: 12px;
+    padding: 20px;
+    text-align: center;
+  }
+
+  /* Content area */
   .content { min-width: 0; min-height: 0; display: grid; grid-template-rows: 42px 1fr; }
   .tabs { display: flex; gap: 2px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
   .tab {
@@ -240,14 +320,8 @@
 
   <main class="main">
     <aside class="sidebar">
-      <section class="section">
-        <h2>파일 정보</h2>
-        <div class="stat"><span>박자</span><strong id="beatCount">-</strong></div>
-        <div class="stat"><span>음표</span><strong id="noteCount">-</strong></div>
-        <div class="stat"><span>화음 박자</span><strong id="chordCount">-</strong></div>
-        <div class="stat"><span>누락 음표</span><strong class="warn" id="droppedCount">-</strong></div>
-      </section>
 
+      <!-- 변환 설정 -->
       <section class="section">
         <h2>변환 설정</h2>
         <div class="slider">
@@ -258,13 +332,14 @@
           <label>하이 프렛 기준 <strong id="highValue">9</strong></label>
           <input id="highSlider" type="range" min="5" max="20" value="9">
         </div>
-        <div class="slider">
+        <div class="slider" style="margin-bottom:4px">
           <label>손 이동 가중치 <strong id="moveValue">2.5</strong></label>
           <input id="moveSlider" type="range" min="0.5" max="6" step="0.5" value="2.5">
         </div>
-        <button class="btn primary" id="reconvertBtn" disabled style="width:100%">다시 변환</button>
+        <button class="btn primary" id="reconvertBtn" disabled style="width:100%; margin-top:8px">다시 변환</button>
       </section>
 
+      <!-- 키 조정 -->
       <section class="section">
         <h2>키 조정</h2>
         <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:4px;">
@@ -277,6 +352,17 @@
         </div>
         <button class="btn" id="keyResetBtn" style="width:100%; margin-top:8px;" disabled>초기화</button>
       </section>
+
+      <!-- 변환 기록 -->
+      <div class="history-section">
+        <div class="history-header">변환 기록</div>
+        <div class="history-list" id="historyList">
+          <div class="history-empty">
+            <div style="font-size:22px;margin-bottom:4px">📋</div>
+            <div>변환 기록 없음</div>
+          </div>
+        </div>
+      </div>
     </aside>
 
     <section class="content">
@@ -322,24 +408,29 @@ let currentResult = null;
 let tabPngUrl = null;
 let transposeSteps = 0;
 
+// 기록 상태
+let historyItems = [];
+let currentHistoryId = null;
+let currentHistoryPngUrl = null;
+
 const $ = id => document.getElementById(id);
 
+/* ── 탭 PNG 초기화 ─────────────────────────────────────── */
 function clearTabPngPreview() {
-  if (tabPngUrl) {
-    URL.revokeObjectURL(tabPngUrl);
-    tabPngUrl = null;
-  }
+  if (tabPngUrl) { URL.revokeObjectURL(tabPngUrl); tabPngUrl = null; }
   $('tabPreview').removeAttribute('src');
   $('tabPreview').style.display = 'none';
   $('pngEmpty').style.display = 'flex';
 }
 
+/* ── 버튼 이벤트 ────────────────────────────────────────── */
 $('chooseBtn').addEventListener('click', () => $('fileInput').click());
 $('fileInput').addEventListener('change', e => selectFile(e.target.files[0]));
 $('reconvertBtn').addEventListener('click', () => currentFile && convertFile());
 $('downloadBtn').addEventListener('click', downloadPng);
 $('consoleBtn').addEventListener('click', showTextTab);
 
+/* ── 키 조정 ─────────────────────────────────────────────── */
 function updateKeyDisplay() {
   const v = transposeSteps;
   $('keyValue').textContent = v > 0 ? `+${v}` : v;
@@ -362,6 +453,7 @@ $('keyResetBtn').addEventListener('click', () => {
   if (currentResult) renderScore(currentResult);
 });
 
+/* ── 슬라이더 ────────────────────────────────────────────── */
 for (const [slider, label, format] of [
   ['spanSlider', 'spanValue', v => v],
   ['highSlider', 'highValue', v => v],
@@ -370,21 +462,21 @@ for (const [slider, label, format] of [
   $(slider).addEventListener('input', e => $(label).textContent = format(e.target.value));
 }
 
+/* ── 탭(뷰) 전환 ─────────────────────────────────────────── */
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     tab.classList.add('active');
     $(tab.dataset.view).classList.add('active');
-    if (tab.dataset.view === 'pngView' && currentFile && !tabPngUrl) loadPngPreview();
+    if (tab.dataset.view === 'pngView' && (currentFile || currentHistoryPngUrl) && !tabPngUrl)
+      loadPngPreview();
   });
 });
 
+/* ── 드래그&드롭 ─────────────────────────────────────────── */
 for (const area of [$('dropZone'), $('scoreView')]) {
-  area.addEventListener('dragover', e => {
-    e.preventDefault();
-    $('dropZone').classList.add('marked');
-  });
+  area.addEventListener('dragover', e => { e.preventDefault(); $('dropZone').classList.add('marked'); });
   area.addEventListener('dragleave', () => $('dropZone').classList.remove('marked'));
   area.addEventListener('drop', e => {
     e.preventDefault();
@@ -393,10 +485,13 @@ for (const area of [$('dropZone'), $('scoreView')]) {
   });
 }
 
+/* ── 파일 선택 ───────────────────────────────────────────── */
 function selectFile(file) {
   if (!file) return;
   currentFile = file;
   currentResult = null;
+  currentHistoryId = null;
+  currentHistoryPngUrl = null;
   clearTabPngPreview();
   transposeSteps = 0;
   updateKeyDisplay();
@@ -417,6 +512,7 @@ function showSourcePreview(file) {
   if (isImage) $('sourcePreview').src = URL.createObjectURL(file);
 }
 
+/* ── FormData ────────────────────────────────────────────── */
 function formData() {
   const fd = new FormData();
   fd.append('file', currentFile);
@@ -427,6 +523,7 @@ function formData() {
   return fd;
 }
 
+/* ── 변환 ────────────────────────────────────────────────── */
 async function convertFile() {
   clearTabPngPreview();
   showLoading(true);
@@ -445,6 +542,7 @@ async function convertFile() {
     $('keyUpBtn').disabled = false;
     $('keyDownBtn').disabled = false;
     setStatus('변환 완료', 'ok');
+    await loadHistory();                            // 기록 갱신
     if ($('pngView').classList.contains('active')) await loadPngPreview();
   } catch (err) {
     showLoading(false);
@@ -454,6 +552,7 @@ async function convertFile() {
   }
 }
 
+/* ── 악보 렌더 ───────────────────────────────────────────── */
 function renderScore(data) {
   const area = $('scoreArea');
   area.innerHTML = '';
@@ -510,16 +609,23 @@ function renderScore(data) {
   area.style.display = 'block';
 }
 
+/* ── 통계 업데이트 ───────────────────────────────────────── */
 function updateStats(data) {
-  $('beatCount').textContent = data.beatCount;
-  $('noteCount').textContent = data.noteCount;
-  $('chordCount').textContent = data.chordCount;
-  $('droppedCount').textContent = data.droppedCount;
   $('statusBeats').textContent = `${data.beatCount} 박자`;
   $('statusNotes').textContent = `${data.noteCount} 음표`;
 }
 
+/* ── PNG 미리보기 ────────────────────────────────────────── */
 async function loadPngPreview() {
+  // 기록에서 불러온 경우 저장된 PNG 바로 표시
+  if (currentHistoryPngUrl) {
+    $('pngLoading').style.display = 'none';
+    $('pngEmpty').style.display = 'none';
+    $('tabPreview').src = currentHistoryPngUrl;
+    $('tabPreview').style.display = 'block';
+    return;
+  }
+
   $('pngLoading').style.display = 'flex';
   $('pngEmpty').style.display = 'none';
   $('tabPreview').style.display = 'none';
@@ -540,7 +646,16 @@ async function loadPngPreview() {
   }
 }
 
+/* ── PNG 저장 ────────────────────────────────────────────── */
 async function downloadPng() {
+  // 기록에서 불러온 경우
+  if (currentHistoryPngUrl) {
+    const a = document.createElement('a');
+    a.href = currentHistoryPngUrl;
+    a.download = (currentResult?.title || 'tab') + '-tab.png';
+    a.click();
+    return;
+  }
   if (!tabPngUrl) await loadPngPreview();
   if (!tabPngUrl) return;
   const a = document.createElement('a');
@@ -549,6 +664,7 @@ async function downloadPng() {
   a.click();
 }
 
+/* ── 텍스트 타브 ─────────────────────────────────────────── */
 function showTextTab() {
   if (!currentResult) return;
   const lines = [];
@@ -562,7 +678,7 @@ function showTextTab() {
       for (let i = start; i < end; i++) {
         const group = currentResult.groups[i];
         const pos = group.positions.find(p => p.stringIndex === s);
-        row += pos ? '-' + String(pos.fret).padEnd(3, '-') : '----';
+        row += pos ? '-' + String(pos.fret + transposeSteps).padEnd(3, '-') : '----';
       }
       lines.push(row + '|');
     }
@@ -573,6 +689,7 @@ function showTextTab() {
   w.document.write(`<pre style="margin:0;min-height:100%;background:#18191b;color:#eceff3;padding:20px;font:13px Consolas,monospace;white-space:pre">${lines.join('\n')}</pre>`);
 }
 
+/* ── 로딩 표시 ───────────────────────────────────────────── */
 function showLoading(show) {
   $('loading').style.display = show ? 'flex' : 'none';
   $('scoreArea').style.display = show ? 'none' : $('scoreArea').style.display;
@@ -584,6 +701,111 @@ function setStatus(text, state) {
   el.className = 'status' + (state ? ' ' + state : '');
   el.querySelector('span:last-child').textContent = text;
 }
+
+/* ═══════════════════════════════════════════════════════════
+   변환 기록
+   ═══════════════════════════════════════════════════════════ */
+
+async function loadHistory() {
+  try {
+    const res = await fetch('/api/history');
+    if (!res.ok) return;
+    historyItems = await res.json();
+    renderHistoryList();
+  } catch { /* non-fatal */ }
+}
+
+function renderHistoryList() {
+  const list = $('historyList');
+  if (!historyItems || historyItems.length === 0) {
+    list.innerHTML = `
+      <div class="history-empty">
+        <div style="font-size:22px;margin-bottom:4px">📋</div>
+        <div>변환 기록 없음</div>
+      </div>`;
+    return;
+  }
+
+  list.innerHTML = '';
+  historyItems.forEach(item => {
+    const el = document.createElement('div');
+    el.className = 'history-item' + (currentHistoryId === item.id ? ' active' : '');
+    el.dataset.id = item.id;
+
+    const transposeLabel = item.transposeSteps !== 0
+      ? ` · ${item.transposeSteps > 0 ? '+' : ''}${item.transposeSteps}반음`
+      : '';
+
+    el.innerHTML = `
+      <img class="history-thumb" src="${item.pngUrl}" alt=""
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div class="history-thumb-ph" style="display:none">🎵</div>
+      <div class="history-info">
+        <div class="history-name" title="${escHtml(item.fileName)}">${escHtml(item.fileName)}</div>
+        <div class="history-meta">${formatTime(item.convertedAt)}${transposeLabel}</div>
+      </div>`;
+
+    el.addEventListener('click', () => loadHistoryItem(item.id));
+    list.appendChild(el);
+  });
+}
+
+async function loadHistoryItem(id) {
+  try {
+    const res = await fetch(`/api/history/${id}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const meta = historyItems.find(h => h.id === id);
+
+    currentResult = data;
+    currentFile = null;
+    currentHistoryId = id;
+    currentHistoryPngUrl = meta ? meta.pngUrl : null;
+    transposeSteps = 0;
+
+    clearTabPngPreview();
+    updateKeyDisplay();
+    renderScore(data);
+    updateStats(data);
+    renderHistoryList();   // active 상태 반영
+
+    $('fileName').textContent = data.title || '알 수 없음';
+    $('sourcePreview').style.display = 'none';
+    $('sourceEmpty').style.display = 'flex';
+    $('downloadBtn').disabled = false;
+    $('consoleBtn').disabled = false;
+    $('reconvertBtn').disabled = true;    // 파일 없으므로 비활성
+    $('keyUpBtn').disabled = false;
+    $('keyDownBtn').disabled = false;
+    setStatus('기록에서 불러옴', 'ok');
+
+    // 타브 뷰로 전환
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.querySelector('[data-view="scoreView"]').classList.add('active');
+    $('scoreView').classList.add('active');
+  } catch { /* non-fatal */ }
+}
+
+/* ── 유틸 ───────────────────────────────────────────────── */
+function formatTime(isoString) {
+  const diff = Math.floor((Date.now() - new Date(isoString)) / 1000);
+  if (diff < 60)    return '방금 전';
+  if (diff < 3600)  return `${Math.floor(diff / 60)}분 전`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+  return `${Math.floor(diff / 86400)}일 전`;
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/* ── 초기화 ─────────────────────────────────────────────── */
+loadHistory();
 </script>
 </body>
 </html>

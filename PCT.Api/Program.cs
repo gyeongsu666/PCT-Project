@@ -2,8 +2,9 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text.Json;
 using ImageMagick;
-using PCT.Core; 
+using PCT.Core;
 
 //테스트용 주석
 
@@ -17,6 +18,17 @@ app.UseStaticFiles();
 
 // Stop the sidecar Python process cleanly when the web server shuts down.
 app.Lifetime.ApplicationStopping.Register(() => OemerSidecar.Instance.Dispose());
+
+// === History ==============================================================
+var wwwRoot = app.Environment.WebRootPath
+    ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+var historyPngDir  = Path.Combine(wwwRoot, "history");
+var historyDataDir = Path.Combine(app.Environment.ContentRootPath, "history-data");
+var historyMetaPath = Path.Combine(app.Environment.ContentRootPath, "history-meta.json");
+Directory.CreateDirectory(historyPngDir);
+Directory.CreateDirectory(historyDataDir);
+var historyWriteLock = new SemaphoreSlim(1, 1);
+var _histSerOpts = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
 static bool IsImageExtension(string extension) =>
     extension is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".tif" or ".tiff" or ".webp";
@@ -242,7 +254,49 @@ app.MapPost("/api/convert", async (HttpRequest request) =>
         var converter = new TabConverter(settings);
         var tabGroups = converter.Convert(parsed.Groups);
 
-        return Results.Ok(BuildConvertResult(file, parsed.Groups, settings, tabGroups));
+        var result = BuildConvertResult(file, parsed.Groups, settings, tabGroups);
+
+        // Save to history (non-fatal)
+        try
+        {
+            var hId = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var pngFileName = $"{hId}.png";
+
+            var renderer = new TabImageRenderer();
+            var pngBytes = renderer.RenderToPngBytes(tabGroups,
+                Path.GetFileNameWithoutExtension(file.FileName));
+            await File.WriteAllBytesAsync(Path.Combine(historyPngDir, pngFileName), pngBytes);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(historyDataDir, $"{hId}.json"),
+                JsonSerializer.Serialize(result, _histSerOpts));
+
+            await historyWriteLock.WaitAsync();
+            try
+            {
+                var metaList = new List<HistoryMeta>();
+                if (File.Exists(historyMetaPath))
+                {
+                    try
+                    {
+                        metaList = JsonSerializer.Deserialize<List<HistoryMeta>>(
+                            await File.ReadAllTextAsync(historyMetaPath),
+                            _histSerOpts) ?? new();
+                    }
+                    catch { }
+                }
+                metaList.Insert(0, new HistoryMeta(
+                    hId, file.FileName, DateTime.UtcNow.ToString("o"),
+                    0, $"/history/{pngFileName}"));
+                if (metaList.Count > 100) metaList = metaList.Take(100).ToList();
+                await File.WriteAllTextAsync(historyMetaPath,
+                    JsonSerializer.Serialize(metaList, _histSerOpts));
+            }
+            finally { historyWriteLock.Release(); }
+        }
+        catch { /* history save is non-fatal */ }
+
+        return Results.Ok(result);
     }
     catch (Exception ex)
     {
@@ -291,8 +345,31 @@ app.MapPost("/api/render-png", async (HttpRequest request) =>
     }
 });
 
+app.MapGet("/api/history", async () =>
+{
+    if (!File.Exists(historyMetaPath))
+        return Results.Ok(Array.Empty<object>());
+    try
+    {
+        var json = await File.ReadAllTextAsync(historyMetaPath);
+        return Results.Content(json, "application/json");
+    }
+    catch { return Results.Ok(Array.Empty<object>()); }
+});
+
+app.MapGet("/api/history/{id}", async (long id) =>
+{
+    var jsonPath = Path.Combine(historyDataDir, $"{id}.json");
+    if (!File.Exists(jsonPath))
+        return Results.NotFound("기록을 찾을 수 없습니다.");
+    var json = await File.ReadAllTextAsync(jsonPath);
+    return Results.Content(json, "application/json");
+});
+
 app.Run();
 
+
+public record HistoryMeta(long Id, string FileName, string ConvertedAt, int TransposeSteps, string PngUrl);
 
 // === Sidecar singleton =======================================================
 // Keeps a single Python process running so we don't pay the 15-30s
