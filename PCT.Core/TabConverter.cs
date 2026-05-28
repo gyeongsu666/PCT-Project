@@ -88,6 +88,12 @@ public class TabConverter
         }
 
         result.Reverse();
+
+        // IsNewMeasure: 앞 그룹과 마디 번호가 달라지는 지점을 표시
+        if (result.Count > 0) result[0].IsNewMeasure = true;
+        for (int i = 1; i < result.Count; i++)
+            result[i].IsNewMeasure = result[i].MeasureNumber != result[i - 1].MeasureNumber;
+
         return result;
     }
 
@@ -96,7 +102,14 @@ public class TabConverter
         var candidates = new List<TabPositionGroup>();
         if (group.IsRest)
         {
-            candidates.Add(new TabPositionGroup { IsRest = true, SourceGroup = group });
+            candidates.Add(new TabPositionGroup
+            {
+                IsRest        = true,
+                SourceGroup   = group,
+                MeasureNumber = group.MeasureNumber,
+                BeatPosition  = group.BeatPosition,
+                Duration      = group.Duration,
+            });
             return candidates;
         }
 
@@ -107,14 +120,25 @@ public class TabConverter
         {
             candidates.Add(new TabPositionGroup
             {
-                Positions = arr,
-                SourceGroup = group,
-                DroppedCount = group.Notes.Count - arr.Count
+                Positions     = arr,
+                SourceGroup   = group,
+                DroppedCount  = group.Notes.Count - arr.Count,
+                MeasureNumber = group.MeasureNumber,
+                BeatPosition  = group.BeatPosition,
+                Duration      = group.Duration,
             });
         }
 
         if (candidates.Count == 0)
-            candidates.Add(new TabPositionGroup { IsRest = true, SourceGroup = group, DroppedCount = group.Notes.Count });
+            candidates.Add(new TabPositionGroup
+            {
+                IsRest        = true,
+                SourceGroup   = group,
+                DroppedCount  = group.Notes.Count,
+                MeasureNumber = group.MeasureNumber,
+                BeatPosition  = group.BeatPosition,
+                Duration      = group.Duration,
+            });
 
         return candidates;
     }

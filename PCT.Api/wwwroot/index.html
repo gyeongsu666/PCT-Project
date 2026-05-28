@@ -195,6 +195,24 @@
     text-align: center;
   }
 
+  /* 기록 삭제 버튼 */
+  .btn-icon {
+    border: 0;
+    background: transparent;
+    color: var(--faint);
+    cursor: pointer;
+    padding: 3px 5px;
+    border-radius: 4px;
+    line-height: 1;
+    font-size: 13px;
+  }
+  .btn-icon:hover { background: rgba(239,102,102,.15); color: var(--bad); }
+  .history-item-del {
+    flex-shrink: 0;
+    align-self: flex-start;
+    margin-top: 1px;
+  }
+
   /* Content area */
   .content { min-width: 0; min-height: 0; display: grid; grid-template-rows: 42px 1fr; }
   .tabs { display: flex; gap: 2px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
@@ -244,6 +262,38 @@
     padding: 22px 14px;
   }
   .system { margin-bottom: 42px; }
+
+  /* ── 박자 행 ────────────────────────────────────────────── */
+  .beat-row {
+    display: flex;
+    align-items: flex-end;
+    padding-bottom: 2px;
+  }
+  .beat-track {
+    flex: 1;
+    display: flex;
+    border-left: 1.5px solid #737a86;
+    border-right: 1.5px solid #737a86;
+  }
+  .beat-cell {
+    width: 36px;
+    flex: 0 0 36px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: var(--muted);
+    font-family: Consolas, monospace;
+  }
+
+  /* 마디선: beat-cell 과 cell 모두에 적용해 연속된 세로선처럼 보이게 */
+  .beat-cell.bar-start,
+  .cell.bar-start {
+    border-left: 1.5px solid #737a86;
+  }
+
+  /* ── 줄(string) 영역 ────────────────────────────────────── */
   .string-rows { display: grid; grid-template-rows: repeat(6, 28px); }
   .string-row { display: flex; align-items: center; }
   .string-label {
@@ -355,7 +405,10 @@
 
       <!-- 변환 기록 -->
       <div class="history-section">
-        <div class="history-header">변환 기록</div>
+        <div class="history-header" style="display:flex;align-items:center;justify-content:space-between;">
+          <span>변환 기록</span>
+          <button class="btn-icon" id="clearHistoryBtn" title="전체 삭제" style="font-size:11px;color:var(--faint)">전체 삭제</button>
+        </div>
         <div class="history-list" id="historyList">
           <div class="history-empty">
             <div style="font-size:22px;margin-bottom:4px">📋</div>
@@ -426,7 +479,10 @@ function clearTabPngPreview() {
 /* ── 버튼 이벤트 ────────────────────────────────────────── */
 $('chooseBtn').addEventListener('click', () => $('fileInput').click());
 $('fileInput').addEventListener('change', e => selectFile(e.target.files[0]));
-$('reconvertBtn').addEventListener('click', () => currentFile && convertFile());
+$('reconvertBtn').addEventListener('click', () => {
+  if (currentFile) convertFile();
+  else if (currentHistoryId) reconvertFromHistory();
+});
 $('downloadBtn').addEventListener('click', downloadPng);
 $('consoleBtn').addEventListener('click', showTextTab);
 
@@ -552,6 +608,42 @@ async function convertFile() {
   }
 }
 
+/* ── 기록 재변환 ──────────────────────────────────────────── */
+async function reconvertFromHistory() {
+  if (!currentHistoryId) return;
+  clearTabPngPreview();
+  showLoading(true);
+  setStatus('재변환 중', '');
+
+  try {
+    const fd = new FormData();
+    fd.append('maxFingerSpan', $('spanSlider').value);
+    fd.append('highFretThreshold', $('highSlider').value);
+    fd.append('handMoveCost', $('moveSlider').value);
+
+    const res = await fetch(`/api/history/${currentHistoryId}/reconvert`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(await res.text());
+
+    currentResult = await res.json();
+    transposeSteps = 0;
+    updateKeyDisplay();
+    // PNG URL을 캐시 버스팅해서 업데이트된 썸네일을 반영
+    currentHistoryPngUrl = `/history/${currentHistoryId}.png?t=${Date.now()}`;
+    renderScore(currentResult);
+    updateStats(currentResult);
+    $('downloadBtn').disabled = false;
+    $('consoleBtn').disabled = false;
+    setStatus('재변환 완료', 'ok');
+    await loadHistory();
+    if ($('pngView').classList.contains('active')) await loadPngPreview();
+  } catch (err) {
+    showLoading(false);
+    $('dropZone').style.display = 'flex';
+    $('dropZone').querySelector('strong').textContent = err.message;
+    setStatus('재변환 실패', 'bad');
+  }
+}
+
 /* ── 악보 렌더 ───────────────────────────────────────────── */
 function renderScore(data) {
   const area = $('scoreArea');
@@ -565,6 +657,38 @@ function renderScore(data) {
     const systemGroups = data.groups.slice(start, end);
     const systemEl = document.createElement('div');
     systemEl.className = 'system';
+
+    /* ── 박자 행 ── */
+    const beatRow = document.createElement('div');
+    beatRow.className = 'beat-row';
+    // 줄 레이블 너비만큼 스페이서 (string-label: 24px + margin 8px = 32px)
+    const beatSpacer = document.createElement('div');
+    beatSpacer.style.cssText = 'width:32px;flex-shrink:0';
+    beatRow.appendChild(beatSpacer);
+
+    const beatTrack = document.createElement('div');
+    beatTrack.className = 'beat-track';
+
+    systemGroups.forEach((group, idx) => {
+      const cell = document.createElement('div');
+      // 마디선: 시스템 첫 칸이 아닌 새 마디에만
+      const isBarStart = (group.isNewMeasure ?? false) && idx > 0;
+      cell.className = 'beat-cell' + (isBarStart ? ' bar-start' : '');
+
+      // 정수 박 위치에만 박 번호 표시 (±0.05 오차 허용)
+      if (group.beatPosition != null) {
+        const frac = group.beatPosition - Math.floor(group.beatPosition);
+        if (frac < 0.05 || frac > 0.95) {
+          cell.textContent = Math.round(group.beatPosition) + 1;
+        }
+      }
+      beatTrack.appendChild(cell);
+    });
+
+    beatRow.appendChild(beatTrack);
+    systemEl.appendChild(beatRow);
+
+    /* ── 줄 영역 ── */
     const rows = document.createElement('div');
     rows.className = 'string-rows';
 
@@ -576,9 +700,10 @@ function renderScore(data) {
       track.className = 'track';
       track.innerHTML = '<div class="line"></div><div class="bar" style="left:0"></div><div class="bar" style="right:0"></div>';
 
-      systemGroups.forEach(group => {
+      systemGroups.forEach((group, idx) => {
+        const isBarStart = (group.isNewMeasure ?? false) && idx > 0;
         const cell = document.createElement('div');
-        cell.className = 'cell';
+        cell.className = 'cell' + (isBarStart ? ' bar-start' : '');
         const pos = group.positions.find(p => p.stringIndex === s);
         if (!group.isRest && pos) {
           const fretNum = pos.fret + transposeSteps;
@@ -743,8 +868,13 @@ function renderHistoryList() {
       <div class="history-info">
         <div class="history-name" title="${escHtml(item.fileName)}">${escHtml(item.fileName)}</div>
         <div class="history-meta">${formatTime(item.convertedAt)}${transposeLabel}</div>
-      </div>`;
+      </div>
+      <button class="btn-icon history-item-del" data-id="${item.id}" title="삭제">✕</button>`;
 
+    el.querySelector('.history-item-del').addEventListener('click', e => {
+      e.stopPropagation();
+      deleteHistoryItem(item.id);
+    });
     el.addEventListener('click', () => loadHistoryItem(item.id));
     list.appendChild(el);
   });
@@ -774,7 +904,7 @@ async function loadHistoryItem(id) {
     $('sourceEmpty').style.display = 'flex';
     $('downloadBtn').disabled = false;
     $('consoleBtn').disabled = false;
-    $('reconvertBtn').disabled = true;    // 파일 없으므로 비활성
+    $('reconvertBtn').disabled = false;   // 기록 재변환 가능
     $('keyUpBtn').disabled = false;
     $('keyDownBtn').disabled = false;
     setStatus('기록에서 불러옴', 'ok');
@@ -784,6 +914,45 @@ async function loadHistoryItem(id) {
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     document.querySelector('[data-view="scoreView"]').classList.add('active');
     $('scoreView').classList.add('active');
+  } catch { /* non-fatal */ }
+}
+
+/* ── 기록 삭제 ──────────────────────────────────────────── */
+async function deleteHistoryItem(id) {
+  try {
+    const res = await fetch(`/api/history/${id}`, { method: 'DELETE' });
+    if (!res.ok) return;
+    historyItems = historyItems.filter(h => h.id !== id);
+    // 현재 보고 있던 기록이 삭제된 경우 초기화
+    if (currentHistoryId === id) {
+      currentHistoryId = null;
+      currentHistoryPngUrl = null;
+      currentResult = null;
+      $('scoreArea').style.display = 'none';
+      $('dropZone').style.display = 'flex';
+      $('dropZone').querySelector('strong').textContent = 'PNG 악보를 선택하세요';
+      $('downloadBtn').disabled = true;
+      $('consoleBtn').disabled = true;
+      $('reconvertBtn').disabled = true;
+      $('keyUpBtn').disabled = true;
+      $('keyDownBtn').disabled = true;
+      $('fileName').textContent = '선택된 파일 없음';
+      setStatus('대기 중', '');
+    }
+    renderHistoryList();
+  } catch { /* non-fatal */ }
+}
+
+async function clearAllHistory() {
+  if (!historyItems.length) return;
+  if (!confirm('변환 기록을 모두 삭제할까요?')) return;
+  try {
+    const res = await fetch('/api/history', { method: 'DELETE' });
+    if (!res.ok) return;
+    historyItems = [];
+    currentHistoryId = null;
+    currentHistoryPngUrl = null;
+    renderHistoryList();
   } catch { /* non-fatal */ }
 }
 
@@ -805,6 +974,7 @@ function escHtml(str) {
 }
 
 /* ── 초기화 ─────────────────────────────────────────────── */
+$('clearHistoryBtn').addEventListener('click', clearAllHistory);
 loadHistory();
 </script>
 </body>

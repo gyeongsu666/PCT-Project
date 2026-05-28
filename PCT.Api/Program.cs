@@ -118,7 +118,7 @@ static List<NoteGroup> ParseMusicXml(Stream stream, string extension)
     return parser.Parse(xmlStream);
 }
 
-static async Task<(List<NoteGroup> Groups, List<string> TempFiles)> ReadUploadedScoreAsync(IFormFile file)
+static async Task<(List<NoteGroup> Groups, List<string> TempFiles, byte[]? MusicXmlBytes)> ReadUploadedScoreAsync(IFormFile file)
 {
     var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
     if (!IsMusicXmlExtension(extension) && extension != ".pdf" && !IsImageExtension(extension))
@@ -128,8 +128,31 @@ static async Task<(List<NoteGroup> Groups, List<string> TempFiles)> ReadUploaded
 
     if (IsMusicXmlExtension(extension))
     {
-        using var stream = file.OpenReadStream();
-        return (ParseMusicXml(stream, extension), tempFiles);
+        // MXL: zip에서 내부 XML 추출 / XML: 그대로 읽기
+        // 바이트로 보관해 history에 .musicxml로 저장할 수 있게 한다.
+        byte[] xmlBytes;
+        if (extension == ".mxl")
+        {
+            await using var mxlStream = file.OpenReadStream();
+            using var archive = new ZipArchive(mxlStream, ZipArchiveMode.Read, leaveOpen: true);
+            var entry = archive.Entries.FirstOrDefault(e =>
+                e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) &&
+                !e.FullName.StartsWith("META-INF/", StringComparison.OrdinalIgnoreCase));
+            if (entry is null)
+                throw new InvalidDataException("MXL 안에서 MusicXML 파일을 찾지 못했습니다.");
+            var ms = new MemoryStream();
+            using var xmlStream = entry.Open();
+            await xmlStream.CopyToAsync(ms);
+            xmlBytes = ms.ToArray();
+        }
+        else
+        {
+            var ms = new MemoryStream();
+            await using var xmlStream = file.OpenReadStream();
+            await xmlStream.CopyToAsync(ms);
+            xmlBytes = ms.ToArray();
+        }
+        return (new MusicXmlParser().Parse(new MemoryStream(xmlBytes)), tempFiles, xmlBytes);
     }
 
     var inputPath = await SaveUploadAsync(file, extension);
@@ -141,9 +164,9 @@ static async Task<(List<NoteGroup> Groups, List<string> TempFiles)> ReadUploaded
     var cached = CacheLookup(hashHex);
     if (cached is not null)
     {
-        await using var cachedStream = File.OpenRead(cached);
         // NOTE: cached file is shared across runs — don't add to tempFiles.
-        return (ParseMusicXml(cachedStream, ".musicxml"), tempFiles);
+        var cachedBytes = await File.ReadAllBytesAsync(cached);
+        return (ParseMusicXml(new MemoryStream(cachedBytes), ".musicxml"), tempFiles, cachedBytes);
     }
 
     var imagePath = inputPath;
@@ -164,8 +187,8 @@ static async Task<(List<NoteGroup> Groups, List<string> TempFiles)> ReadUploaded
 
     CacheStore(hashHex, producedPath);
 
-    await using var producedStream = File.OpenRead(producedPath);
-    return (ParseMusicXml(producedStream, ".musicxml"), tempFiles);
+    var musicXmlBytes = await File.ReadAllBytesAsync(producedPath);
+    return (ParseMusicXml(new MemoryStream(musicXmlBytes), ".musicxml"), tempFiles, musicXmlBytes);
 }
 
 static TabConverterSettings ReadSettings(IFormCollection form) => new()
@@ -182,25 +205,29 @@ static List<TabPositionGroup> ApplyTranspose(List<TabPositionGroup> groups, int 
     if (steps == 0) return groups;
     return groups.Select(g => new TabPositionGroup
     {
-        IsRest = g.IsRest,
+        IsRest        = g.IsRest,
+        MeasureNumber = g.MeasureNumber,
+        BeatPosition  = g.BeatPosition,
+        Duration      = g.Duration,
+        IsNewMeasure  = g.IsNewMeasure,
         Positions = g.Positions.Select(p => new TabPosition
         {
-            StringIndex = p.StringIndex,
-            Fret = p.Fret + steps,
+            StringIndex  = p.StringIndex,
+            Fret         = p.Fret + steps,
             IsUnplayable = p.IsUnplayable || (p.Fret + steps) < 0,
-            SourceNote = p.SourceNote
+            SourceNote   = p.SourceNote
         }).ToList()
     }).ToList();
 }
 
-static object BuildConvertResult(IFormFile file, List<NoteGroup> groups, TabConverterSettings settings, List<TabPositionGroup> tabGroups)
+static object BuildConvertResult(string title, List<NoteGroup> groups, TabConverterSettings settings, List<TabPositionGroup> tabGroups)
 {
     var chordCount = groups.Count(g => !g.IsRest && g.Notes.Count > 1);
     var droppedCount = tabGroups.Sum(g => g.DroppedCount);
 
     return new
     {
-        title = Path.GetFileNameWithoutExtension(file.FileName),
+        title,
         beatCount = groups.Count,
         noteCount = groups.Sum(g => g.Notes.Count),
         chordCount,
@@ -208,8 +235,12 @@ static object BuildConvertResult(IFormFile file, List<NoteGroup> groups, TabConv
         settings = new { settings.MaxFingerSpan, settings.HighFretThreshold, settings.HandMoveCost },
         groups = tabGroups.Select(g => new
         {
-            isRest = g.IsRest,
+            isRest       = g.IsRest,
             droppedCount = g.DroppedCount,
+            measureNumber = g.MeasureNumber,
+            beatPosition  = g.BeatPosition,
+            duration      = g.Duration,
+            isNewMeasure  = g.IsNewMeasure,
             positions = g.Positions.Where(p => !p.IsUnplayable)
                 .Select(p => new { stringIndex = p.StringIndex, fret = p.Fret })
                 .ToList()
@@ -254,7 +285,7 @@ app.MapPost("/api/convert", async (HttpRequest request) =>
         var converter = new TabConverter(settings);
         var tabGroups = converter.Convert(parsed.Groups);
 
-        var result = BuildConvertResult(file, parsed.Groups, settings, tabGroups);
+        var result = BuildConvertResult(Path.GetFileNameWithoutExtension(file.FileName), parsed.Groups, settings, tabGroups);
 
         // Save to history (non-fatal)
         try
@@ -270,6 +301,12 @@ app.MapPost("/api/convert", async (HttpRequest request) =>
             await File.WriteAllTextAsync(
                 Path.Combine(historyDataDir, $"{hId}.json"),
                 JsonSerializer.Serialize(result, _histSerOpts));
+
+            // MusicXML 저장 — 나중에 재변환할 때 사용
+            if (parsed.MusicXmlBytes is not null)
+                await File.WriteAllBytesAsync(
+                    Path.Combine(historyDataDir, $"{hId}.musicxml"),
+                    parsed.MusicXmlBytes);
 
             await historyWriteLock.WaitAsync();
             try
@@ -364,6 +401,128 @@ app.MapGet("/api/history/{id}", async (long id) =>
         return Results.NotFound("기록을 찾을 수 없습니다.");
     var json = await File.ReadAllTextAsync(jsonPath);
     return Results.Content(json, "application/json");
+});
+
+app.MapDelete("/api/history/{id}", async (long id) =>
+{
+    await historyWriteLock.WaitAsync();
+    try
+    {
+        // meta 목록에서 제거
+        if (File.Exists(historyMetaPath))
+        {
+            var metaList = new List<HistoryMeta>();
+            try { metaList = JsonSerializer.Deserialize<List<HistoryMeta>>(
+                    await File.ReadAllTextAsync(historyMetaPath), _histSerOpts) ?? new(); } catch { }
+            metaList.RemoveAll(m => m.Id == id);
+            await File.WriteAllTextAsync(historyMetaPath,
+                JsonSerializer.Serialize(metaList, _histSerOpts));
+        }
+    }
+    finally { historyWriteLock.Release(); }
+
+    // 연관 파일 삭제 (non-fatal)
+    foreach (var path in new[]
+    {
+        Path.Combine(historyDataDir, $"{id}.json"),
+        Path.Combine(historyDataDir, $"{id}.musicxml"),
+        Path.Combine(historyPngDir,  $"{id}.png"),
+    })
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    return Results.Ok();
+});
+
+app.MapDelete("/api/history", async () =>
+{
+    await historyWriteLock.WaitAsync();
+    try
+    {
+        if (File.Exists(historyMetaPath))
+        {
+            List<HistoryMeta> metaList = new();
+            try { metaList = JsonSerializer.Deserialize<List<HistoryMeta>>(
+                    await File.ReadAllTextAsync(historyMetaPath), _histSerOpts) ?? new(); } catch { }
+
+            // 연관 파일 전체 삭제
+            foreach (var m in metaList)
+            {
+                foreach (var path in new[]
+                {
+                    Path.Combine(historyDataDir, $"{m.Id}.json"),
+                    Path.Combine(historyDataDir, $"{m.Id}.musicxml"),
+                    Path.Combine(historyPngDir,  $"{m.Id}.png"),
+                })
+                {
+                    try { if (File.Exists(path)) File.Delete(path); } catch { }
+                }
+            }
+
+            File.Delete(historyMetaPath);
+        }
+    }
+    finally { historyWriteLock.Release(); }
+
+    return Results.Ok();
+});
+
+app.MapPost("/api/history/{id}/reconvert", async (long id, HttpRequest request) =>
+{
+    var musicXmlPath = Path.Combine(historyDataDir, $"{id}.musicxml");
+    if (!File.Exists(musicXmlPath))
+        return Results.NotFound("원본 악보 파일을 찾을 수 없습니다. 새로 업로드하여 변환해 주세요.");
+
+    // 기존 결과에서 title 꺼내기
+    string? title = null;
+    var jsonPath = Path.Combine(historyDataDir, $"{id}.json");
+    if (File.Exists(jsonPath))
+    {
+        try
+        {
+            var existing = JsonSerializer.Deserialize<JsonElement>(
+                await File.ReadAllTextAsync(jsonPath), _histSerOpts);
+            if (existing.TryGetProperty("title", out var t))
+                title = t.GetString();
+        }
+        catch { }
+    }
+
+    if (!request.HasFormContentType)
+        return Results.BadRequest("multipart/form-data 요청이 필요합니다.");
+
+    var form = await request.ReadFormAsync();
+    var settings = ReadSettings(form);
+
+    try
+    {
+        var xmlBytes = await File.ReadAllBytesAsync(musicXmlPath);
+        var groups = new MusicXmlParser().Parse(new MemoryStream(xmlBytes));
+        var converter = new TabConverter(settings);
+        var tabGroups = converter.Convert(groups);
+        var finalTitle = title ?? id.ToString();
+        var result = BuildConvertResult(finalTitle, groups, settings, tabGroups);
+
+        // JSON·PNG 덮어쓰기 (non-fatal)
+        try
+        {
+            await File.WriteAllTextAsync(jsonPath,
+                JsonSerializer.Serialize(result, _histSerOpts));
+
+            var renderer = new TabImageRenderer();
+            var pngBytes = renderer.RenderToPngBytes(tabGroups, finalTitle);
+            await File.WriteAllBytesAsync(
+                Path.Combine(historyPngDir, $"{id}.png"), pngBytes);
+        }
+        catch { }
+
+        return Results.Ok(result);
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
 });
 
 app.Run();
