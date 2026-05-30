@@ -14,7 +14,19 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAn
 var app = builder.Build();
 app.UseCors();
 app.UseDefaultFiles();
-app.UseStaticFiles();
+// index.html은 캐시하지 않는다 — JS 변경 시 브라우저가 항상 최신 버전을 받도록
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        if (ctx.File.Name.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Context.Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+            ctx.Context.Response.Headers["Pragma"]        = "no-cache";
+            ctx.Context.Response.Headers["Expires"]       = "0";
+        }
+    }
+});
 
 // Stop the sidecar Python process cleanly when the web server shuts down.
 app.Lifetime.ApplicationStopping.Register(() => OemerSidecar.Instance.Dispose());
@@ -99,7 +111,7 @@ static void CacheStore(string hashHex, string musicXmlPath)
 
 // === Pipeline ================================================================
 
-static List<NoteGroup> ParseMusicXml(Stream stream, string extension)
+static List<MeasureBeat> ParseMusicXml(Stream stream, string extension)
 {
     var parser = new MusicXmlParser();
 
@@ -118,7 +130,7 @@ static List<NoteGroup> ParseMusicXml(Stream stream, string extension)
     return parser.Parse(xmlStream);
 }
 
-static async Task<(List<NoteGroup> Groups, List<string> TempFiles, byte[]? MusicXmlBytes)> ReadUploadedScoreAsync(IFormFile file)
+static async Task<(List<MeasureBeat> Beats, List<string> TempFiles, byte[]? MusicXmlBytes)> ReadUploadedScoreAsync(IFormFile file)
 {
     var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
     if (!IsMusicXmlExtension(extension) && extension != ".pdf" && !IsImageExtension(extension))
@@ -152,7 +164,7 @@ static async Task<(List<NoteGroup> Groups, List<string> TempFiles, byte[]? Music
             await xmlStream.CopyToAsync(ms);
             xmlBytes = ms.ToArray();
         }
-        return (new MusicXmlParser().Parse(new MemoryStream(xmlBytes)), tempFiles, xmlBytes);
+        return (new MusicXmlParser().Parse(new MemoryStream(xmlBytes)), tempFiles, xmlBytes);  // List<MeasureBeat>
     }
 
     var inputPath = await SaveUploadAsync(file, extension);
@@ -200,50 +212,55 @@ static TabConverterSettings ReadSettings(IFormCollection form) => new()
         : 2.5
 };
 
-static List<TabPositionGroup> ApplyTranspose(List<TabPositionGroup> groups, int steps)
+static List<TabMeasureBeat> ApplyTranspose(List<TabMeasureBeat> beats, int steps)
 {
-    if (steps == 0) return groups;
-    return groups.Select(g => new TabPositionGroup
+    if (steps == 0) return beats;
+    return beats.Select(b => new TabMeasureBeat
     {
-        IsRest        = g.IsRest,
-        MeasureNumber = g.MeasureNumber,
-        BeatPosition  = g.BeatPosition,
-        Duration      = g.Duration,
-        IsNewMeasure  = g.IsNewMeasure,
-        Positions = g.Positions.Select(p => new TabPosition
+        MeasureNumber = b.MeasureNumber,
+        BeatNumber    = b.BeatNumber,
+        Notes = b.Notes.Select(g => new TabPositionGroup
         {
-            StringIndex  = p.StringIndex,
-            Fret         = p.Fret + steps,
-            IsUnplayable = p.IsUnplayable || (p.Fret + steps) < 0,
-            SourceNote   = p.SourceNote
+            IsRest       = g.IsRest,
+            DroppedCount = g.DroppedCount,
+            SourceGroup  = g.SourceGroup,
+            Positions    = g.Positions.Select(p => new TabPosition
+            {
+                StringIndex  = p.StringIndex,
+                Fret         = p.Fret + steps,
+                IsUnplayable = p.IsUnplayable || (p.Fret + steps) < 0,
+                SourceNote   = p.SourceNote
+            }).ToList()
         }).ToList()
     }).ToList();
 }
 
-static object BuildConvertResult(string title, List<NoteGroup> groups, TabConverterSettings settings, List<TabPositionGroup> tabGroups)
+static object BuildConvertResult(string title, List<MeasureBeat> inputBeats, TabConverterSettings settings, List<TabMeasureBeat> tabBeats)
 {
-    var chordCount = groups.Count(g => !g.IsRest && g.Notes.Count > 1);
-    var droppedCount = tabGroups.Sum(g => g.DroppedCount);
+    int noteCount    = inputBeats.Sum(b => b.Notes.Sum(ng => ng.Notes.Count));
+    int chordCount   = inputBeats.Sum(b => b.Notes.Count(ng => !ng.IsRest && ng.Notes.Count > 1));
+    int droppedCount = tabBeats.Sum(b => b.Notes.Sum(g => g.DroppedCount));
 
     return new
     {
         title,
-        beatCount = groups.Count,
-        noteCount = groups.Sum(g => g.Notes.Count),
+        beatCount    = inputBeats.Count,  // 박 슬롯 수
+        noteCount,
         chordCount,
         droppedCount,
         settings = new { settings.MaxFingerSpan, settings.HighFretThreshold, settings.HandMoveCost },
-        groups = tabGroups.Select(g => new
+        beats = tabBeats.Select(b => new
         {
-            isRest       = g.IsRest,
-            droppedCount = g.DroppedCount,
-            measureNumber = g.MeasureNumber,
-            beatPosition  = g.BeatPosition,
-            duration      = g.Duration,
-            isNewMeasure  = g.IsNewMeasure,
-            positions = g.Positions.Where(p => !p.IsUnplayable)
-                .Select(p => new { stringIndex = p.StringIndex, fret = p.Fret })
-                .ToList()
+            measureNumber = b.MeasureNumber,
+            beatNumber    = b.BeatNumber,
+            notes = b.Notes.Select(g => new
+            {
+                isRest       = g.IsRest,
+                droppedCount = g.DroppedCount,
+                positions    = g.Positions.Where(p => !p.IsUnplayable)
+                    .Select(p => new { stringIndex = p.StringIndex, fret = p.Fret })
+                    .ToList()
+            }).ToList()
         }).ToList()
     };
 }
@@ -283,9 +300,9 @@ app.MapPost("/api/convert", async (HttpRequest request) =>
 
         var settings = ReadSettings(form);
         var converter = new TabConverter(settings);
-        var tabGroups = converter.Convert(parsed.Groups);
+        var tabBeats = converter.Convert(parsed.Beats);
 
-        var result = BuildConvertResult(Path.GetFileNameWithoutExtension(file.FileName), parsed.Groups, settings, tabGroups);
+        var result = BuildConvertResult(Path.GetFileNameWithoutExtension(file.FileName), parsed.Beats, settings, tabBeats);
 
         // Save to history (non-fatal)
         try
@@ -294,7 +311,7 @@ app.MapPost("/api/convert", async (HttpRequest request) =>
             var pngFileName = $"{hId}.png";
 
             var renderer = new TabImageRenderer();
-            var pngBytes = renderer.RenderToPngBytes(tabGroups,
+            var pngBytes = renderer.RenderToPngBytes(tabBeats,
                 Path.GetFileNameWithoutExtension(file.FileName));
             await File.WriteAllBytesAsync(Path.Combine(historyPngDir, pngFileName), pngBytes);
 
@@ -364,11 +381,11 @@ app.MapPost("/api/render-png", async (HttpRequest request) =>
 
         var settings = ReadSettings(form);
         var converter = new TabConverter(settings);
-        var tabGroups = converter.Convert(parsed.Groups);
+        var tabBeats = converter.Convert(parsed.Beats);
         var transposeSteps = int.TryParse(form["transposeSteps"], out var ts) ? ts : 0;
-        var transposedGroups = ApplyTranspose(tabGroups, transposeSteps);
+        var transposedBeats = ApplyTranspose(tabBeats, transposeSteps);
         var renderer = new TabImageRenderer();
-        var bytes = renderer.RenderToPngBytes(transposedGroups, Path.GetFileNameWithoutExtension(file.FileName));
+        var bytes = renderer.RenderToPngBytes(transposedBeats, Path.GetFileNameWithoutExtension(file.FileName));
 
         return Results.File(bytes, "image/png", $"{Path.GetFileNameWithoutExtension(file.FileName)}-tab.png");
     }
@@ -498,11 +515,11 @@ app.MapPost("/api/history/{id}/reconvert", async (long id, HttpRequest request) 
     try
     {
         var xmlBytes = await File.ReadAllBytesAsync(musicXmlPath);
-        var groups = new MusicXmlParser().Parse(new MemoryStream(xmlBytes));
+        var beats = new MusicXmlParser().Parse(new MemoryStream(xmlBytes));
         var converter = new TabConverter(settings);
-        var tabGroups = converter.Convert(groups);
+        var tabBeats = converter.Convert(beats);
         var finalTitle = title ?? id.ToString();
-        var result = BuildConvertResult(finalTitle, groups, settings, tabGroups);
+        var result = BuildConvertResult(finalTitle, beats, settings, tabBeats);
 
         // JSON·PNG 덮어쓰기 (non-fatal)
         try
@@ -511,7 +528,7 @@ app.MapPost("/api/history/{id}/reconvert", async (long id, HttpRequest request) 
                 JsonSerializer.Serialize(result, _histSerOpts));
 
             var renderer = new TabImageRenderer();
-            var pngBytes = renderer.RenderToPngBytes(tabGroups, finalTitle);
+            var pngBytes = renderer.RenderToPngBytes(tabBeats, finalTitle);
             await File.WriteAllBytesAsync(
                 Path.Combine(historyPngDir, $"{id}.png"), pngBytes);
         }

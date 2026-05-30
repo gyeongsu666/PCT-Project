@@ -4,26 +4,29 @@ namespace PCT.Core;
 
 public class MusicXmlParser
 {
-    public List<NoteGroup> Parse(Stream stream)
+    public List<MeasureBeat> Parse(Stream stream)
     {
         using var reader = XmlReader.Create(stream, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
         return ParseReader(reader);
     }
 
-    public List<NoteGroup> ParseFile(string filePath)
+    public List<MeasureBeat> ParseFile(string filePath)
     {
         using var reader = XmlReader.Create(filePath, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
         return ParseReader(reader);
     }
 
-    private List<NoteGroup> ParseReader(XmlReader reader)
+    private List<MeasureBeat> ParseReader(XmlReader reader)
     {
-        var groups  = new List<NoteGroup>();
-        NoteGroup current = null;
+        var beats        = new List<MeasureBeat>();
+        MeasureBeat currentBeat      = null;
+        NoteGroup   currentNoteGroup = null;   // 화음 누적용
 
-        int    measureNumber    = 0;
-        int    divisions        = 1;      // 4분음표 1박 = divisions 단위
-        double beatAccumulator  = 0;      // 현재 마디 안에서의 누적 박수
+        int    measureNumber = 0;
+        int    divisions     = 1;    // 4분음표 1박 = divisions 단위
+        int    beatType      = 4;    // 박자표 분모 (4/4 → 4, 6/8 → 8)
+        double beatSizeInQN  = 1.0;  // 1박의 크기 (4분음표 단위)
+        double qnAccumulator = 0;    // 마디 내 4분음표 누산기 (voice 1 전용)
 
         while (reader.Read())
         {
@@ -31,19 +34,71 @@ public class MusicXmlParser
 
             switch (reader.LocalName)
             {
-                // ── 마디 경계: 번호 올리고 박 누산기 초기화 ──────────────
+                // ── 마디 경계 ──────────────────────────────────────────────────
                 case "measure":
                     measureNumber++;
-                    beatAccumulator = 0;
+                    qnAccumulator    = 0;
+                    currentNoteGroup = null;
                     break;
 
-                // ── divisions: 4분음표 1박이 몇 단위인지 ─────────────────
+                // ── divisions ─────────────────────────────────────────────────
                 case "divisions":
                     if (int.TryParse(reader.ReadElementContentAsString(), out int d) && d > 0)
                         divisions = d;
                     break;
 
-                // ── note ─────────────────────────────────────────────────
+                // ── 박자표: <time><beats>N</beats><beat-type>D</beat-type></time>
+                case "time":
+                {
+                    using var timeReader = reader.ReadSubtree();
+                    while (timeReader.Read())
+                    {
+                        if (timeReader.NodeType != XmlNodeType.Element) continue;
+                        if (timeReader.LocalName == "beat-type" &&
+                            int.TryParse(timeReader.ReadElementContentAsString(), out int bt) && bt > 0)
+                        {
+                            beatType     = bt;
+                            beatSizeInQN = 4.0 / beatType;  // 1박 = 4분음표 몇 개
+                        }
+                    }
+                    break;
+                }
+
+                // ── backup: 다성부 표기에서 이전 위치로 되감기 ──────────────
+                // Voice 1 끝난 뒤 <backup>으로 마디 처음으로 돌아가고 Voice 2를 씀
+                case "backup":
+                {
+                    using var bkReader = reader.ReadSubtree();
+                    while (bkReader.Read())
+                    {
+                        if (bkReader.NodeType != XmlNodeType.Element) continue;
+                        if (bkReader.LocalName == "duration" &&
+                            int.TryParse(bkReader.ReadElementContentAsString(), out int bkDur) && bkDur > 0)
+                        {
+                            qnAccumulator = Math.Max(0, qnAccumulator - (double)bkDur / divisions);
+                            currentNoteGroup = null;  // 성부 전환 시 화음 누적 리셋
+                        }
+                    }
+                    break;
+                }
+
+                // ── forward: 쉼표 없이 위치만 앞으로 이동 ────────────────────
+                case "forward":
+                {
+                    using var fwdReader = reader.ReadSubtree();
+                    while (fwdReader.Read())
+                    {
+                        if (fwdReader.NodeType != XmlNodeType.Element) continue;
+                        if (fwdReader.LocalName == "duration" &&
+                            int.TryParse(fwdReader.ReadElementContentAsString(), out int fwdDur) && fwdDur > 0)
+                        {
+                            qnAccumulator += (double)fwdDur / divisions;
+                        }
+                    }
+                    break;
+                }
+
+                // ── note ──────────────────────────────────────────────────────
                 case "note":
                 {
                     bool   isChord     = false;
@@ -51,8 +106,8 @@ public class MusicXmlParser
                     string step        = "C";
                     int    octave      = 4;
                     int    alter       = 0;
-                    int    rawDuration = divisions; // 기본값 = 4분음표 1박
-                    int    voice       = 1;         // MusicXML <voice> 번호
+                    int    rawDuration = divisions;
+                    int    voice       = 1;
 
                     using var noteReader = reader.ReadSubtree();
                     while (noteReader.Read())
@@ -88,41 +143,51 @@ public class MusicXmlParser
                         }
                     }
 
-                    double durationBeats = rawDuration > 0
+                    double durationInQN = rawDuration > 0
                         ? (double)rawDuration / divisions
                         : 1.0;
 
                     var note = new Note();
-                    if (isRest) { note.IsRest = true; }
+                    if (isRest) note.IsRest = true;
                     else        { note.Step = step; note.Octave = octave; note.Alter = alter; }
 
-                    if (isChord && current != null && !current.IsRest)
+                    if (isChord && currentNoteGroup != null && !currentNoteGroup.IsRest)
                     {
-                        // 화음 음표는 같은 그룹에 추가. 박 누산기 건드리지 않음.
-                        current.Notes.Add(note);
+                        // 화음 — 같은 NoteGroup에 추가, 박 누산기 건드리지 않음
+                        currentNoteGroup.Notes.Add(note);
                     }
                     else
                     {
-                        current = new NoteGroup
-                        {
-                            MeasureNumber = measureNumber,
-                            BeatPosition  = beatAccumulator,
-                            Duration      = durationBeats,
-                        };
-                        current.Notes.Add(note);
-                        groups.Add(current);
+                        // 새 음표 이벤트: 정수 박 번호 계산
+                        // 1e-9 epsilon: 부동소수점 오차로 박 경계를 살짝 넘는 경우 방지
+                        int beatNumber = (int)(qnAccumulator / beatSizeInQN + 1e-9) + 1;
 
-                        // 박 누산기는 성부 1만 진행시킨다.
-                        // 성부 2+ 는 <backup>으로 시간을 되돌린 뒤 쓰여지므로
-                        // 누산기를 그대로 두면 성부 1 기준 박 위치를 그대로 상속한다.
-                        if (voice == 1)
-                            beatAccumulator += durationBeats;
+                        // 해당 (마디, 박)의 MeasureBeat를 찾거나 새로 만든다
+                        if (currentBeat == null ||
+                            currentBeat.MeasureNumber != measureNumber ||
+                            currentBeat.BeatNumber    != beatNumber)
+                        {
+                            currentBeat = new MeasureBeat
+                            {
+                                MeasureNumber = measureNumber,
+                                BeatNumber    = beatNumber,
+                            };
+                            beats.Add(currentBeat);
+                        }
+
+                        var ng = new NoteGroup();
+                        ng.Notes.Add(note);
+                        currentBeat.Notes.Add(ng);
+                        currentNoteGroup = ng;
+
+                        // <backup>이 성부 전환을 처리하므로 모든 성부가 누산기를 진행
+                        qnAccumulator += durationInQN;
                     }
                     break;
                 }
             }
         }
 
-        return groups;
+        return beats;
     }
 }

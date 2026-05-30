@@ -1,18 +1,15 @@
 namespace PCT.Core;
 
+/// <summary>
+/// 하나의 음표 이벤트에 대한 타브 운지 결과.
+/// 박자/마디 정보는 상위 TabMeasureBeat 가 보유한다.
+/// </summary>
 public class TabPositionGroup
 {
     public List<TabPosition> Positions { get; set; } = new();
     public bool IsRest { get; set; } = false;
     public int DroppedCount { get; set; } = 0;
     public NoteGroup SourceGroup { get; set; }
-
-    // 박자 정보 (NoteGroup에서 그대로 전달)
-    public int    MeasureNumber { get; set; } = 1;
-    public double BeatPosition  { get; set; } = 0;
-    public double Duration      { get; set; } = 1;
-    /// <summary>이전 그룹과 마디 번호가 달라질 때 true. TabConverter가 DP 후에 설정한다.</summary>
-    public bool   IsNewMeasure  { get; set; } = false;
 
     public double HandCenter()
     {
