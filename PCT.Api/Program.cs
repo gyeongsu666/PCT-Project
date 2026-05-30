@@ -111,12 +111,15 @@ static void CacheStore(string hashHex, string musicXmlPath)
 
 // === Pipeline ================================================================
 
-static List<MeasureBeat> ParseMusicXml(Stream stream, string extension)
+static (List<MeasureBeat> Beats, double Bpm, double BeatSizeInQN) ParseMusicXml(Stream stream, string extension)
 {
     var parser = new MusicXmlParser();
 
     if (extension != ".mxl")
-        return parser.Parse(stream);
+    {
+        var b = parser.Parse(stream);
+        return (b, parser.Bpm, parser.BeatSizeInQN);
+    }
 
     using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
     var entry = archive.Entries.FirstOrDefault(e =>
@@ -127,10 +130,11 @@ static List<MeasureBeat> ParseMusicXml(Stream stream, string extension)
         throw new InvalidDataException("MXL 안에서 MusicXML 파일을 찾지 못했습니다.");
 
     using var xmlStream = entry.Open();
-    return parser.Parse(xmlStream);
+    var beats = parser.Parse(xmlStream);
+    return (beats, parser.Bpm, parser.BeatSizeInQN);
 }
 
-static async Task<(List<MeasureBeat> Beats, List<string> TempFiles, byte[]? MusicXmlBytes)> ReadUploadedScoreAsync(IFormFile file)
+static async Task<(List<MeasureBeat> Beats, double Bpm, double BeatSizeInQN, List<string> TempFiles, byte[]? MusicXmlBytes)> ReadUploadedScoreAsync(IFormFile file)
 {
     var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
     if (!IsMusicXmlExtension(extension) && extension != ".pdf" && !IsImageExtension(extension))
@@ -164,7 +168,9 @@ static async Task<(List<MeasureBeat> Beats, List<string> TempFiles, byte[]? Musi
             await xmlStream.CopyToAsync(ms);
             xmlBytes = ms.ToArray();
         }
-        return (new MusicXmlParser().Parse(new MemoryStream(xmlBytes)), tempFiles, xmlBytes);  // List<MeasureBeat>
+        var p = new MusicXmlParser();
+        var mxBeats = p.Parse(new MemoryStream(xmlBytes));
+        return (mxBeats, p.Bpm, p.BeatSizeInQN, tempFiles, xmlBytes);
     }
 
     var inputPath = await SaveUploadAsync(file, extension);
@@ -178,7 +184,8 @@ static async Task<(List<MeasureBeat> Beats, List<string> TempFiles, byte[]? Musi
     {
         // NOTE: cached file is shared across runs — don't add to tempFiles.
         var cachedBytes = await File.ReadAllBytesAsync(cached);
-        return (ParseMusicXml(new MemoryStream(cachedBytes), ".musicxml"), tempFiles, cachedBytes);
+        var (cBeats, cBpm, cBsq) = ParseMusicXml(new MemoryStream(cachedBytes), ".musicxml");
+        return (cBeats, cBpm, cBsq, tempFiles, cachedBytes);
     }
 
     var imagePath = inputPath;
@@ -200,7 +207,8 @@ static async Task<(List<MeasureBeat> Beats, List<string> TempFiles, byte[]? Musi
     CacheStore(hashHex, producedPath);
 
     var musicXmlBytes = await File.ReadAllBytesAsync(producedPath);
-    return (ParseMusicXml(new MemoryStream(musicXmlBytes), ".musicxml"), tempFiles, musicXmlBytes);
+    var (pBeats, pBpm, pBsq) = ParseMusicXml(new MemoryStream(musicXmlBytes), ".musicxml");
+    return (pBeats, pBpm, pBsq, tempFiles, musicXmlBytes);
 }
 
 static TabConverterSettings ReadSettings(IFormCollection form) => new()
@@ -235,7 +243,7 @@ static List<TabMeasureBeat> ApplyTranspose(List<TabMeasureBeat> beats, int steps
     }).ToList();
 }
 
-static object BuildConvertResult(string title, List<MeasureBeat> inputBeats, TabConverterSettings settings, List<TabMeasureBeat> tabBeats)
+static object BuildConvertResult(string title, List<MeasureBeat> inputBeats, double bpm, double beatSizeInQN, TabConverterSettings settings, List<TabMeasureBeat> tabBeats)
 {
     int noteCount    = inputBeats.Sum(b => b.Notes.Sum(ng => ng.Notes.Count));
     int chordCount   = inputBeats.Sum(b => b.Notes.Count(ng => !ng.IsRest && ng.Notes.Count > 1));
@@ -244,7 +252,9 @@ static object BuildConvertResult(string title, List<MeasureBeat> inputBeats, Tab
     return new
     {
         title,
-        beatCount    = inputBeats.Count,  // 박 슬롯 수
+        bpm,
+        beatSizeInQN,
+        beatCount    = inputBeats.Count,
         noteCount,
         chordCount,
         droppedCount,
@@ -302,7 +312,7 @@ app.MapPost("/api/convert", async (HttpRequest request) =>
         var converter = new TabConverter(settings);
         var tabBeats = converter.Convert(parsed.Beats);
 
-        var result = BuildConvertResult(Path.GetFileNameWithoutExtension(file.FileName), parsed.Beats, settings, tabBeats);
+        var result = BuildConvertResult(Path.GetFileNameWithoutExtension(file.FileName), parsed.Beats, parsed.Bpm, parsed.BeatSizeInQN, settings, tabBeats);
 
         // Save to history (non-fatal)
         try
@@ -515,11 +525,12 @@ app.MapPost("/api/history/{id}/reconvert", async (long id, HttpRequest request) 
     try
     {
         var xmlBytes = await File.ReadAllBytesAsync(musicXmlPath);
-        var beats = new MusicXmlParser().Parse(new MemoryStream(xmlBytes));
+        var reconvertParser = new MusicXmlParser();
+        var beats = reconvertParser.Parse(new MemoryStream(xmlBytes));
         var converter = new TabConverter(settings);
         var tabBeats = converter.Convert(beats);
         var finalTitle = title ?? id.ToString();
-        var result = BuildConvertResult(finalTitle, beats, settings, tabBeats);
+        var result = BuildConvertResult(finalTitle, beats, reconvertParser.Bpm, reconvertParser.BeatSizeInQN, settings, tabBeats);
 
         // JSON·PNG 덮어쓰기 (non-fatal)
         try

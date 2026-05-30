@@ -4,14 +4,22 @@ namespace PCT.Core;
 
 public class MusicXmlParser
 {
+    /// <summary>Parse() 호출 후 악보에서 읽은 템포 (4분음표/분). 기본값 120.</summary>
+    public double Bpm { get; private set; } = 120;
+
+    /// <summary>Parse() 호출 후 1박의 크기 (4분음표 단위). 4/4 → 1.0, 6/8 → 0.5.</summary>
+    public double BeatSizeInQN { get; private set; } = 1.0;
+
     public List<MeasureBeat> Parse(Stream stream)
     {
+        Bpm = 120; BeatSizeInQN = 1.0;
         using var reader = XmlReader.Create(stream, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
         return ParseReader(reader);
     }
 
     public List<MeasureBeat> ParseFile(string filePath)
     {
+        Bpm = 120; BeatSizeInQN = 1.0;
         using var reader = XmlReader.Create(filePath, new XmlReaderSettings { DtdProcessing = DtdProcessing.Ignore });
         return ParseReader(reader);
     }
@@ -26,7 +34,8 @@ public class MusicXmlParser
         int    divisions     = 1;    // 4분음표 1박 = divisions 단위
         int    beatType      = 4;    // 박자표 분모 (4/4 → 4, 6/8 → 8)
         double beatSizeInQN  = 1.0;  // 1박의 크기 (4분음표 단위)
-        double qnAccumulator = 0;    // 마디 내 4분음표 누산기 (voice 1 전용)
+        double qnAccumulator = 0;    // 마디 내 4분음표 누산기
+        double bpm           = 120;  // <sound tempo="..."> 에서 읽음
 
         while (reader.Read())
         {
@@ -46,6 +55,20 @@ public class MusicXmlParser
                     if (int.TryParse(reader.ReadElementContentAsString(), out int d) && d > 0)
                         divisions = d;
                     break;
+
+                // ── 템포: <sound tempo="62"/> ─────────────────────────────────
+                // <direction><sound tempo="..."/></direction> 형태로 나타남
+                case "sound":
+                {
+                    var tempoAttr = reader.GetAttribute("tempo");
+                    if (tempoAttr != null &&
+                        double.TryParse(tempoAttr,
+                            System.Globalization.NumberStyles.Any,
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            out double t) && t > 0)
+                        bpm = t;
+                    break;
+                }
 
                 // ── 박자표: <time><beats>N</beats><beat-type>D</beat-type></time>
                 case "time":
@@ -188,6 +211,9 @@ public class MusicXmlParser
             }
         }
 
+        // 파싱 완료 후 인스턴스 프로퍼티에 저장
+        Bpm         = bpm;
+        BeatSizeInQN = beatSizeInQN;
         return beats;
     }
 }
