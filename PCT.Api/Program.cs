@@ -14,7 +14,19 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAn
 var app = builder.Build();
 app.UseCors();
 app.UseDefaultFiles();
-app.UseStaticFiles();
+// index.html은 캐시하지 않는다 — JS 변경 시 브라우저가 항상 최신 버전을 받도록
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        if (ctx.File.Name.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Context.Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+            ctx.Context.Response.Headers["Pragma"]        = "no-cache";
+            ctx.Context.Response.Headers["Expires"]       = "0";
+        }
+    }
+});
 
 // Stop the sidecar Python process cleanly when the web server shuts down.
 app.Lifetime.ApplicationStopping.Register(() => OemerSidecar.Instance.Dispose());
@@ -99,12 +111,15 @@ static void CacheStore(string hashHex, string musicXmlPath)
 
 // === Pipeline ================================================================
 
-static List<NoteGroup> ParseMusicXml(Stream stream, string extension)
+static (List<MeasureBeat> Beats, double Bpm, double BeatSizeInQN) ParseMusicXml(Stream stream, string extension)
 {
     var parser = new MusicXmlParser();
 
     if (extension != ".mxl")
-        return parser.Parse(stream);
+    {
+        var b = parser.Parse(stream);
+        return (b, parser.Bpm, parser.BeatSizeInQN);
+    }
 
     using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
     var entry = archive.Entries.FirstOrDefault(e =>
@@ -115,10 +130,11 @@ static List<NoteGroup> ParseMusicXml(Stream stream, string extension)
         throw new InvalidDataException("MXL 안에서 MusicXML 파일을 찾지 못했습니다.");
 
     using var xmlStream = entry.Open();
-    return parser.Parse(xmlStream);
+    var beats = parser.Parse(xmlStream);
+    return (beats, parser.Bpm, parser.BeatSizeInQN);
 }
 
-static async Task<(List<NoteGroup> Groups, List<string> TempFiles)> ReadUploadedScoreAsync(IFormFile file)
+static async Task<(List<MeasureBeat> Beats, double Bpm, double BeatSizeInQN, List<string> TempFiles, byte[]? MusicXmlBytes)> ReadUploadedScoreAsync(IFormFile file)
 {
     var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
     if (!IsMusicXmlExtension(extension) && extension != ".pdf" && !IsImageExtension(extension))
@@ -128,8 +144,33 @@ static async Task<(List<NoteGroup> Groups, List<string> TempFiles)> ReadUploaded
 
     if (IsMusicXmlExtension(extension))
     {
-        using var stream = file.OpenReadStream();
-        return (ParseMusicXml(stream, extension), tempFiles);
+        // MXL: zip에서 내부 XML 추출 / XML: 그대로 읽기
+        // 바이트로 보관해 history에 .musicxml로 저장할 수 있게 한다.
+        byte[] xmlBytes;
+        if (extension == ".mxl")
+        {
+            await using var mxlStream = file.OpenReadStream();
+            using var archive = new ZipArchive(mxlStream, ZipArchiveMode.Read, leaveOpen: true);
+            var entry = archive.Entries.FirstOrDefault(e =>
+                e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase) &&
+                !e.FullName.StartsWith("META-INF/", StringComparison.OrdinalIgnoreCase));
+            if (entry is null)
+                throw new InvalidDataException("MXL 안에서 MusicXML 파일을 찾지 못했습니다.");
+            var ms = new MemoryStream();
+            using var xmlStream = entry.Open();
+            await xmlStream.CopyToAsync(ms);
+            xmlBytes = ms.ToArray();
+        }
+        else
+        {
+            var ms = new MemoryStream();
+            await using var xmlStream = file.OpenReadStream();
+            await xmlStream.CopyToAsync(ms);
+            xmlBytes = ms.ToArray();
+        }
+        var p = new MusicXmlParser();
+        var mxBeats = p.Parse(new MemoryStream(xmlBytes));
+        return (mxBeats, p.Bpm, p.BeatSizeInQN, tempFiles, xmlBytes);
     }
 
     var inputPath = await SaveUploadAsync(file, extension);
@@ -141,9 +182,10 @@ static async Task<(List<NoteGroup> Groups, List<string> TempFiles)> ReadUploaded
     var cached = CacheLookup(hashHex);
     if (cached is not null)
     {
-        await using var cachedStream = File.OpenRead(cached);
         // NOTE: cached file is shared across runs — don't add to tempFiles.
-        return (ParseMusicXml(cachedStream, ".musicxml"), tempFiles);
+        var cachedBytes = await File.ReadAllBytesAsync(cached);
+        var (cBeats, cBpm, cBsq) = ParseMusicXml(new MemoryStream(cachedBytes), ".musicxml");
+        return (cBeats, cBpm, cBsq, tempFiles, cachedBytes);
     }
 
     var imagePath = inputPath;
@@ -164,8 +206,9 @@ static async Task<(List<NoteGroup> Groups, List<string> TempFiles)> ReadUploaded
 
     CacheStore(hashHex, producedPath);
 
-    await using var producedStream = File.OpenRead(producedPath);
-    return (ParseMusicXml(producedStream, ".musicxml"), tempFiles);
+    var musicXmlBytes = await File.ReadAllBytesAsync(producedPath);
+    var (pBeats, pBpm, pBsq) = ParseMusicXml(new MemoryStream(musicXmlBytes), ".musicxml");
+    return (pBeats, pBpm, pBsq, tempFiles, musicXmlBytes);
 }
 
 static TabConverterSettings ReadSettings(IFormCollection form) => new()
@@ -177,42 +220,57 @@ static TabConverterSettings ReadSettings(IFormCollection form) => new()
         : 2.5
 };
 
-static List<TabPositionGroup> ApplyTranspose(List<TabPositionGroup> groups, int steps)
+static List<TabMeasureBeat> ApplyTranspose(List<TabMeasureBeat> beats, int steps)
 {
-    if (steps == 0) return groups;
-    return groups.Select(g => new TabPositionGroup
+    if (steps == 0) return beats;
+    return beats.Select(b => new TabMeasureBeat
     {
-        IsRest = g.IsRest,
-        Positions = g.Positions.Select(p => new TabPosition
+        MeasureNumber = b.MeasureNumber,
+        BeatNumber    = b.BeatNumber,
+        Notes = b.Notes.Select(g => new TabPositionGroup
         {
-            StringIndex = p.StringIndex,
-            Fret = p.Fret + steps,
-            IsUnplayable = p.IsUnplayable || (p.Fret + steps) < 0,
-            SourceNote = p.SourceNote
+            IsRest       = g.IsRest,
+            DroppedCount = g.DroppedCount,
+            SourceGroup  = g.SourceGroup,
+            Positions    = g.Positions.Select(p => new TabPosition
+            {
+                StringIndex  = p.StringIndex,
+                Fret         = p.Fret + steps,
+                IsUnplayable = p.IsUnplayable || (p.Fret + steps) < 0,
+                SourceNote   = p.SourceNote
+            }).ToList()
         }).ToList()
     }).ToList();
 }
 
-static object BuildConvertResult(IFormFile file, List<NoteGroup> groups, TabConverterSettings settings, List<TabPositionGroup> tabGroups)
+static object BuildConvertResult(string title, List<MeasureBeat> inputBeats, double bpm, double beatSizeInQN, TabConverterSettings settings, List<TabMeasureBeat> tabBeats)
 {
-    var chordCount = groups.Count(g => !g.IsRest && g.Notes.Count > 1);
-    var droppedCount = tabGroups.Sum(g => g.DroppedCount);
+    int noteCount    = inputBeats.Sum(b => b.Notes.Sum(ng => ng.Notes.Count));
+    int chordCount   = inputBeats.Sum(b => b.Notes.Count(ng => !ng.IsRest && ng.Notes.Count > 1));
+    int droppedCount = tabBeats.Sum(b => b.Notes.Sum(g => g.DroppedCount));
 
     return new
     {
-        title = Path.GetFileNameWithoutExtension(file.FileName),
-        beatCount = groups.Count,
-        noteCount = groups.Sum(g => g.Notes.Count),
+        title,
+        bpm,
+        beatSizeInQN,
+        beatCount    = inputBeats.Count,
+        noteCount,
         chordCount,
         droppedCount,
         settings = new { settings.MaxFingerSpan, settings.HighFretThreshold, settings.HandMoveCost },
-        groups = tabGroups.Select(g => new
+        beats = tabBeats.Select(b => new
         {
-            isRest = g.IsRest,
-            droppedCount = g.DroppedCount,
-            positions = g.Positions.Where(p => !p.IsUnplayable)
-                .Select(p => new { stringIndex = p.StringIndex, fret = p.Fret })
-                .ToList()
+            measureNumber = b.MeasureNumber,
+            beatNumber    = b.BeatNumber,
+            notes = b.Notes.Select(g => new
+            {
+                isRest       = g.IsRest,
+                droppedCount = g.DroppedCount,
+                positions    = g.Positions.Where(p => !p.IsUnplayable)
+                    .Select(p => new { stringIndex = p.StringIndex, fret = p.Fret })
+                    .ToList()
+            }).ToList()
         }).ToList()
     };
 }
@@ -252,9 +310,9 @@ app.MapPost("/api/convert", async (HttpRequest request) =>
 
         var settings = ReadSettings(form);
         var converter = new TabConverter(settings);
-        var tabGroups = converter.Convert(parsed.Groups);
+        var tabBeats = converter.Convert(parsed.Beats);
 
-        var result = BuildConvertResult(file, parsed.Groups, settings, tabGroups);
+        var result = BuildConvertResult(Path.GetFileNameWithoutExtension(file.FileName), parsed.Beats, parsed.Bpm, parsed.BeatSizeInQN, settings, tabBeats);
 
         // Save to history (non-fatal)
         try
@@ -263,13 +321,19 @@ app.MapPost("/api/convert", async (HttpRequest request) =>
             var pngFileName = $"{hId}.png";
 
             var renderer = new TabImageRenderer();
-            var pngBytes = renderer.RenderToPngBytes(tabGroups,
+            var pngBytes = renderer.RenderToPngBytes(tabBeats,
                 Path.GetFileNameWithoutExtension(file.FileName));
             await File.WriteAllBytesAsync(Path.Combine(historyPngDir, pngFileName), pngBytes);
 
             await File.WriteAllTextAsync(
                 Path.Combine(historyDataDir, $"{hId}.json"),
                 JsonSerializer.Serialize(result, _histSerOpts));
+
+            // MusicXML 저장 — 나중에 재변환할 때 사용
+            if (parsed.MusicXmlBytes is not null)
+                await File.WriteAllBytesAsync(
+                    Path.Combine(historyDataDir, $"{hId}.musicxml"),
+                    parsed.MusicXmlBytes);
 
             await historyWriteLock.WaitAsync();
             try
@@ -327,11 +391,11 @@ app.MapPost("/api/render-png", async (HttpRequest request) =>
 
         var settings = ReadSettings(form);
         var converter = new TabConverter(settings);
-        var tabGroups = converter.Convert(parsed.Groups);
+        var tabBeats = converter.Convert(parsed.Beats);
         var transposeSteps = int.TryParse(form["transposeSteps"], out var ts) ? ts : 0;
-        var transposedGroups = ApplyTranspose(tabGroups, transposeSteps);
+        var transposedBeats = ApplyTranspose(tabBeats, transposeSteps);
         var renderer = new TabImageRenderer();
-        var bytes = renderer.RenderToPngBytes(transposedGroups, Path.GetFileNameWithoutExtension(file.FileName));
+        var bytes = renderer.RenderToPngBytes(transposedBeats, Path.GetFileNameWithoutExtension(file.FileName));
 
         return Results.File(bytes, "image/png", $"{Path.GetFileNameWithoutExtension(file.FileName)}-tab.png");
     }
@@ -364,6 +428,129 @@ app.MapGet("/api/history/{id}", async (long id) =>
         return Results.NotFound("기록을 찾을 수 없습니다.");
     var json = await File.ReadAllTextAsync(jsonPath);
     return Results.Content(json, "application/json");
+});
+
+app.MapDelete("/api/history/{id}", async (long id) =>
+{
+    await historyWriteLock.WaitAsync();
+    try
+    {
+        // meta 목록에서 제거
+        if (File.Exists(historyMetaPath))
+        {
+            var metaList = new List<HistoryMeta>();
+            try { metaList = JsonSerializer.Deserialize<List<HistoryMeta>>(
+                    await File.ReadAllTextAsync(historyMetaPath), _histSerOpts) ?? new(); } catch { }
+            metaList.RemoveAll(m => m.Id == id);
+            await File.WriteAllTextAsync(historyMetaPath,
+                JsonSerializer.Serialize(metaList, _histSerOpts));
+        }
+    }
+    finally { historyWriteLock.Release(); }
+
+    // 연관 파일 삭제 (non-fatal)
+    foreach (var path in new[]
+    {
+        Path.Combine(historyDataDir, $"{id}.json"),
+        Path.Combine(historyDataDir, $"{id}.musicxml"),
+        Path.Combine(historyPngDir,  $"{id}.png"),
+    })
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    return Results.Ok();
+});
+
+app.MapDelete("/api/history", async () =>
+{
+    await historyWriteLock.WaitAsync();
+    try
+    {
+        if (File.Exists(historyMetaPath))
+        {
+            List<HistoryMeta> metaList = new();
+            try { metaList = JsonSerializer.Deserialize<List<HistoryMeta>>(
+                    await File.ReadAllTextAsync(historyMetaPath), _histSerOpts) ?? new(); } catch { }
+
+            // 연관 파일 전체 삭제
+            foreach (var m in metaList)
+            {
+                foreach (var path in new[]
+                {
+                    Path.Combine(historyDataDir, $"{m.Id}.json"),
+                    Path.Combine(historyDataDir, $"{m.Id}.musicxml"),
+                    Path.Combine(historyPngDir,  $"{m.Id}.png"),
+                })
+                {
+                    try { if (File.Exists(path)) File.Delete(path); } catch { }
+                }
+            }
+
+            File.Delete(historyMetaPath);
+        }
+    }
+    finally { historyWriteLock.Release(); }
+
+    return Results.Ok();
+});
+
+app.MapPost("/api/history/{id}/reconvert", async (long id, HttpRequest request) =>
+{
+    var musicXmlPath = Path.Combine(historyDataDir, $"{id}.musicxml");
+    if (!File.Exists(musicXmlPath))
+        return Results.NotFound("원본 악보 파일을 찾을 수 없습니다. 새로 업로드하여 변환해 주세요.");
+
+    // 기존 결과에서 title 꺼내기
+    string? title = null;
+    var jsonPath = Path.Combine(historyDataDir, $"{id}.json");
+    if (File.Exists(jsonPath))
+    {
+        try
+        {
+            var existing = JsonSerializer.Deserialize<JsonElement>(
+                await File.ReadAllTextAsync(jsonPath), _histSerOpts);
+            if (existing.TryGetProperty("title", out var t))
+                title = t.GetString();
+        }
+        catch { }
+    }
+
+    if (!request.HasFormContentType)
+        return Results.BadRequest("multipart/form-data 요청이 필요합니다.");
+
+    var form = await request.ReadFormAsync();
+    var settings = ReadSettings(form);
+
+    try
+    {
+        var xmlBytes = await File.ReadAllBytesAsync(musicXmlPath);
+        var reconvertParser = new MusicXmlParser();
+        var beats = reconvertParser.Parse(new MemoryStream(xmlBytes));
+        var converter = new TabConverter(settings);
+        var tabBeats = converter.Convert(beats);
+        var finalTitle = title ?? id.ToString();
+        var result = BuildConvertResult(finalTitle, beats, reconvertParser.Bpm, reconvertParser.BeatSizeInQN, settings, tabBeats);
+
+        // JSON·PNG 덮어쓰기 (non-fatal)
+        try
+        {
+            await File.WriteAllTextAsync(jsonPath,
+                JsonSerializer.Serialize(result, _histSerOpts));
+
+            var renderer = new TabImageRenderer();
+            var pngBytes = renderer.RenderToPngBytes(tabBeats, finalTitle);
+            await File.WriteAllBytesAsync(
+                Path.Combine(historyPngDir, $"{id}.png"), pngBytes);
+        }
+        catch { }
+
+        return Results.Ok(result);
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
 });
 
 app.Run();

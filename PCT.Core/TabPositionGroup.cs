@@ -1,5 +1,9 @@
 namespace PCT.Core;
 
+/// <summary>
+/// 하나의 음표 이벤트에 대한 타브 운지 결과.
+/// 박자/마디 정보는 상위 TabMeasureBeat 가 보유한다.
+/// </summary>
 public class TabPositionGroup
 {
     public List<TabPosition> Positions { get; set; } = new();

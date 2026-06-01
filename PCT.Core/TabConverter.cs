@@ -23,19 +23,28 @@ public class TabConverter
         _s = settings ?? new TabConverterSettings();
     }
 
-    public List<TabPositionGroup> Convert(List<NoteGroup> noteGroups)
+    /// <summary>
+    /// MeasureBeat 목록을 받아 각 박 안의 모든 음표에 대해 DP 운지를 계산한 뒤
+    /// TabMeasureBeat 목록으로 반환한다.
+    /// DP는 음표 전체를 flat하게 돌려 마디/박 경계를 가로지르는 손 이동 비용도 최적화한다.
+    /// </summary>
+    public List<TabMeasureBeat> Convert(List<MeasureBeat> inputBeats)
     {
-        var allCandidateGroups = noteGroups.Select(g => GenerateCandidates(g)).ToList();
+        // ① flat 목록 생성 (DP용)
+        var flatNotes = inputBeats.SelectMany(b => b.Notes).ToList();
+
+        if (flatNotes.Count == 0) return new List<TabMeasureBeat>();
+
+        // ② 각 NoteGroup의 후보 운지 생성
+        var allCandidateGroups = flatNotes.Select(GenerateCandidates).ToList();
 
         int n = allCandidateGroups.Count;
-        if (n == 0) return new List<TabPositionGroup>();
-
-        var dp = new double[n][];
+        var dp     = new double[n][];
         var parent = new int[n][];
 
         for (int i = 0; i < n; i++)
         {
-            dp[i] = new double[allCandidateGroups[i].Count];
+            dp[i]     = new double[allCandidateGroups[i].Count];
             parent[i] = new int[allCandidateGroups[i].Count];
             for (int j = 0; j < allCandidateGroups[i].Count; j++) dp[i][j] = double.MaxValue;
         }
@@ -47,7 +56,7 @@ public class TabConverter
         {
             for (int currIdx = 0; currIdx < allCandidateGroups[i].Count; currIdx++)
             {
-                double currentSelfCost = CalculateCost(allCandidateGroups[i][currIdx].Positions);
+                double selfCost = CalculateCost(allCandidateGroups[i][currIdx].Positions);
 
                 for (int prevIdx = 0; prevIdx < allCandidateGroups[i - 1].Count; prevIdx++)
                 {
@@ -57,69 +66,110 @@ public class TabConverter
                         allCandidateGroups[i - 1][prevIdx].Positions,
                         allCandidateGroups[i][currIdx].Positions);
 
-                    double total = dp[i - 1][prevIdx] + moveCost + currentSelfCost;
-
+                    double total = dp[i - 1][prevIdx] + moveCost + selfCost;
                     if (total < dp[i][currIdx])
                     {
-                        dp[i][currIdx] = total;
+                        dp[i][currIdx]     = total;
                         parent[i][currIdx] = prevIdx;
                     }
                 }
             }
         }
 
-        var result = new List<TabPositionGroup>();
-        double minFinalCost = double.MaxValue;
+        // ③ 역추적
+        double minCost = double.MaxValue;
         int lastIdx = 0;
-
         for (int j = 0; j < allCandidateGroups[n - 1].Count; j++)
         {
-            if (dp[n - 1][j] < minFinalCost)
-            {
-                minFinalCost = dp[n - 1][j];
-                lastIdx = j;
-            }
+            if (dp[n - 1][j] < minCost) { minCost = dp[n - 1][j]; lastIdx = j; }
         }
 
+        var flatResult = new List<TabPositionGroup>(n);
         for (int i = n - 1; i >= 0; i--)
         {
-            result.Add(allCandidateGroups[i][lastIdx]);
+            flatResult.Add(allCandidateGroups[i][lastIdx]);
             lastIdx = parent[i][lastIdx];
         }
+        flatResult.Reverse();
 
-        result.Reverse();
+        // ④ flat 결과를 MeasureBeat 구조로 재조립
+        var result = new List<TabMeasureBeat>(inputBeats.Count);
+        int idx = 0;
+        foreach (var beat in inputBeats)
+        {
+            var tb = new TabMeasureBeat
+            {
+                MeasureNumber = beat.MeasureNumber,
+                BeatNumber    = beat.BeatNumber,
+            };
+            for (int i = 0; i < beat.Notes.Count; i++, idx++)
+            {
+                if (idx < flatResult.Count)
+                    tb.Notes.Add(flatResult[idx]);
+            }
+            result.Add(tb);
+        }
+
         return result;
     }
+
+    // ── 후보 운지 생성 ────────────────────────────────────────────────────────
 
     private List<TabPositionGroup> GenerateCandidates(NoteGroup group)
     {
         var candidates = new List<TabPositionGroup>();
+
         if (group.IsRest)
         {
             candidates.Add(new TabPositionGroup { IsRest = true, SourceGroup = group });
             return candidates;
         }
 
-        var validArrangements = new List<List<TabPosition>>();
-        FindArrangements(group.Notes, 0, new List<TabPosition>(), validArrangements);
+        // ① 전음 배치 시도 (탈락 없음)
+        var fullArrangements = new List<List<TabPosition>>();
+        FindArrangements(group.Notes, 0, new List<TabPosition>(), fullArrangements, allowDrops: false);
 
-        foreach (var arr in validArrangements)
+        if (fullArrangements.Count > 0)
         {
-            candidates.Add(new TabPositionGroup
-            {
-                Positions = arr,
-                SourceGroup = group,
-                DroppedCount = group.Notes.Count - arr.Count
-            });
+            foreach (var arr in fullArrangements)
+                candidates.Add(new TabPositionGroup
+                {
+                    Positions    = arr,
+                    SourceGroup  = group,
+                    DroppedCount = 0,
+                });
+            return candidates;
         }
 
+        // ② 물리적으로 불가능한 경우 — 최소 탈락 폴백
+        var fallbackArrangements = new List<List<TabPosition>>();
+        FindArrangements(group.Notes, 0, new List<TabPosition>(), fallbackArrangements, allowDrops: true);
+
+        foreach (var arr in fallbackArrangements)
+            candidates.Add(new TabPositionGroup
+            {
+                Positions    = arr,
+                SourceGroup  = group,
+                DroppedCount = group.Notes.Count - arr.Count,
+            });
+
         if (candidates.Count == 0)
-            candidates.Add(new TabPositionGroup { IsRest = true, SourceGroup = group, DroppedCount = group.Notes.Count });
+            candidates.Add(new TabPositionGroup
+            {
+                IsRest       = true,
+                SourceGroup  = group,
+                DroppedCount = group.Notes.Count,
+            });
 
         return candidates;
     }
 
-    private void FindArrangements(List<Note> notes, int noteIdx, List<TabPosition> current, List<List<TabPosition>> results)
+    /// <param name="allowDrops">
+    /// false: 모든 음을 줄에 배치할 수 있을 때만 결과로 추가 (탈락 없음).
+    /// true : 배치 불가 음은 건너뛰어 부분 배치도 결과로 허용 (최소 탈락).
+    /// </param>
+    private void FindArrangements(List<Note> notes, int noteIdx, List<TabPosition> current,
+                                   List<List<TabPosition>> results, bool allowDrops)
     {
         if (noteIdx == notes.Count)
         {
@@ -133,26 +183,28 @@ public class TabConverter
         for (int s = 0; s < 6; s++)
         {
             if (current.Any(p => p.StringIndex == s)) continue;
-
             int fret = note.MidiNumber - GuitarTuning.StringMidi[s];
             if (fret >= 0 && fret <= GuitarTuning.MaxFret)
             {
                 current.Add(new TabPosition { StringIndex = s, Fret = fret, SourceNote = note });
-                FindArrangements(notes, noteIdx + 1, current, results);
+                FindArrangements(notes, noteIdx + 1, current, results, allowDrops);
                 current.RemoveAt(current.Count - 1);
                 foundAny = true;
             }
         }
 
-        if (!foundAny) FindArrangements(notes, noteIdx + 1, current, results);
+        if (!foundAny && allowDrops)
+            FindArrangements(notes, noteIdx + 1, current, results, allowDrops);
+        // allowDrops == false 이면 이 배치는 결과에 추가하지 않음 (탈락 없이 전음 배치 실패)
     }
+
+    // ── 비용 함수 ─────────────────────────────────────────────────────────────
 
     private double CalculateCost(List<TabPosition> arr)
     {
         if (arr.Count == 0) return 0;
 
         double cost = 0;
-
         var frets = arr.Where(a => a.Fret > 0).Select(a => a.Fret).ToList();
         if (frets.Count > 0)
         {
@@ -170,19 +222,15 @@ public class TabConverter
                 cost += (pos.Fret - _s.HighFretThreshold) * _s.HighFretPenalty;
         }
 
-        double avg = arr.Count > 0 ? arr.Average(a => (double)a.Fret) : 0;
-        cost += avg * _s.AvgFretCost;
-
+        cost += arr.Average(a => (double)a.Fret) * _s.AvgFretCost;
         return cost;
     }
 
     private double HandMoveCostBetween(List<TabPosition> prev, List<TabPosition> cur)
     {
-        var prevFrets = prev.Where(p => p.Fret > 0).Select(p => (double)p.Fret).ToList();
-        var curFrets = cur.Where(p => p.Fret > 0).Select(p => (double)p.Fret).ToList();
-
-        if (prevFrets.Count == 0 || curFrets.Count == 0) return 0;
-
-        return Math.Abs(curFrets.Average() - prevFrets.Average()) * _s.HandMoveCost;
+        var pf = prev.Where(p => p.Fret > 0).Select(p => (double)p.Fret).ToList();
+        var cf = cur.Where(p  => p.Fret > 0).Select(p => (double)p.Fret).ToList();
+        if (pf.Count == 0 || cf.Count == 0) return 0;
+        return Math.Abs(cf.Average() - pf.Average()) * _s.HandMoveCost;
     }
 }

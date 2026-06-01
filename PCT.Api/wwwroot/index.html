@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PCT - Image to Guitar Tab</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎸</text></svg>">
 <style>
   :root {
     --bg: #18191b;
@@ -195,6 +196,24 @@
     text-align: center;
   }
 
+  /* 기록 삭제 버튼 */
+  .btn-icon {
+    border: 0;
+    background: transparent;
+    color: var(--faint);
+    cursor: pointer;
+    padding: 3px 5px;
+    border-radius: 4px;
+    line-height: 1;
+    font-size: 13px;
+  }
+  .btn-icon:hover { background: rgba(239,102,102,.15); color: var(--bad); }
+  .history-item-del {
+    flex-shrink: 0;
+    align-self: flex-start;
+    margin-top: 1px;
+  }
+
   /* Content area */
   .content { min-width: 0; min-height: 0; display: grid; grid-template-rows: 42px 1fr; }
   .tabs { display: flex; gap: 2px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
@@ -242,8 +261,54 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 22px 14px;
+    position: relative;   /* 커서 라인 기준점 */
+  }
+
+  /* 노래방 커서 라인 */
+  #cursorLine {
+    position: absolute;
+    top: 0;
+    width: 2px;
+    background: rgba(255, 215, 0, 0.85);
+    box-shadow: 0 0 8px rgba(255, 215, 0, 0.6);
+    border-radius: 1px;
+    pointer-events: none;
+    display: none;
+    z-index: 20;
   }
   .system { margin-bottom: 42px; }
+
+  /* ── 박자 행 ────────────────────────────────────────────── */
+  .beat-row {
+    display: flex;
+    align-items: flex-end;
+    padding-bottom: 2px;
+  }
+  .beat-track {
+    flex: 1;
+    display: flex;
+    border-left: 1.5px solid #737a86;
+    border-right: 1.5px solid #737a86;
+  }
+  .beat-cell {
+    width: 36px;
+    flex: 0 0 36px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    color: var(--muted);
+    font-family: Consolas, monospace;
+  }
+
+  /* 마디선: beat-cell 과 cell 모두에 적용해 연속된 세로선처럼 보이게 */
+  .beat-cell.bar-start,
+  .cell.bar-start {
+    border-left: 1.5px solid #737a86;
+  }
+
+  /* ── 줄(string) 영역 ────────────────────────────────────── */
   .string-rows { display: grid; grid-template-rows: repeat(6, 28px); }
   .string-row { display: flex; align-items: center; }
   .string-label {
@@ -314,6 +379,7 @@
     <button class="btn" id="chooseBtn">PNG 선택</button>
     <input id="fileInput" type="file" accept=".png,image/png,.jpg,.jpeg,image/jpeg,.pdf,.xml,.musicxml,.mxl">
     <div class="file-name" id="fileName">선택된 파일 없음</div>
+    <button class="btn" id="playBtn" disabled>▶ 재생</button>
     <button class="btn primary" id="downloadBtn" disabled>타브 PNG 저장</button>
     <button class="btn" id="consoleBtn" disabled>텍스트 타브</button>
   </header>
@@ -355,7 +421,10 @@
 
       <!-- 변환 기록 -->
       <div class="history-section">
-        <div class="history-header">변환 기록</div>
+        <div class="history-header" style="display:flex;align-items:center;justify-content:space-between;">
+          <span>변환 기록</span>
+          <button class="btn-icon" id="clearHistoryBtn" title="전체 삭제" style="font-size:11px;color:var(--faint)">전체 삭제</button>
+        </div>
         <div class="history-list" id="historyList">
           <div class="history-empty">
             <div style="font-size:22px;margin-bottom:4px">📋</div>
@@ -378,7 +447,9 @@
           <strong>PNG 악보를 선택하세요</strong>
         </div>
         <div class="loading" id="loading"><div class="spinner"></div><span>변환 중</span></div>
-        <div class="score" id="scoreArea"></div>
+        <div class="score" id="scoreArea">
+          <div id="cursorLine"></div>
+        </div>
       </div>
 
       <div class="view" id="sourceView">
@@ -426,7 +497,10 @@ function clearTabPngPreview() {
 /* ── 버튼 이벤트 ────────────────────────────────────────── */
 $('chooseBtn').addEventListener('click', () => $('fileInput').click());
 $('fileInput').addEventListener('change', e => selectFile(e.target.files[0]));
-$('reconvertBtn').addEventListener('click', () => currentFile && convertFile());
+$('reconvertBtn').addEventListener('click', () => {
+  if (currentFile) convertFile();
+  else if (currentHistoryId) reconvertFromHistory();
+});
 $('downloadBtn').addEventListener('click', downloadPng);
 $('consoleBtn').addEventListener('click', showTextTab);
 
@@ -499,6 +573,7 @@ function selectFile(file) {
   $('downloadBtn').disabled = true;
   $('consoleBtn').disabled = true;
   $('reconvertBtn').disabled = true;
+  $('playBtn').disabled = true;
   $('keyUpBtn').disabled = true;
   $('keyDownBtn').disabled = true;
   showSourcePreview(file);
@@ -539,6 +614,7 @@ async function convertFile() {
     $('downloadBtn').disabled = false;
     $('consoleBtn').disabled = false;
     $('reconvertBtn').disabled = false;
+    $('playBtn').disabled = false;
     $('keyUpBtn').disabled = false;
     $('keyDownBtn').disabled = false;
     setStatus('변환 완료', 'ok');
@@ -552,19 +628,126 @@ async function convertFile() {
   }
 }
 
+/* ── 기록 재변환 ──────────────────────────────────────────── */
+async function reconvertFromHistory() {
+  if (!currentHistoryId) return;
+  clearTabPngPreview();
+  showLoading(true);
+  setStatus('재변환 중', '');
+
+  try {
+    const fd = new FormData();
+    fd.append('maxFingerSpan', $('spanSlider').value);
+    fd.append('highFretThreshold', $('highSlider').value);
+    fd.append('handMoveCost', $('moveSlider').value);
+
+    const res = await fetch(`/api/history/${currentHistoryId}/reconvert`, { method: 'POST', body: fd });
+    if (!res.ok) throw new Error(await res.text());
+
+    currentResult = await res.json();
+    transposeSteps = 0;
+    updateKeyDisplay();
+    // PNG URL을 캐시 버스팅해서 업데이트된 썸네일을 반영
+    currentHistoryPngUrl = `/history/${currentHistoryId}.png?t=${Date.now()}`;
+    renderScore(currentResult);
+    updateStats(currentResult);
+    $('downloadBtn').disabled = false;
+    $('consoleBtn').disabled = false;
+    $('playBtn').disabled = false;
+    setStatus('재변환 완료', 'ok');
+    await loadHistory();
+    if ($('pngView').classList.contains('active')) await loadPngPreview();
+  } catch (err) {
+    showLoading(false);
+    $('dropZone').style.display = 'flex';
+    $('dropZone').querySelector('strong').textContent = err.message;
+    setStatus('재변환 실패', 'bad');
+  }
+}
+
 /* ── 악보 렌더 ───────────────────────────────────────────── */
+
+/**
+ * beats 배열(새 형식)을 flat한 렌더 아이템 목록으로 변환한다.
+ * 구 형식(groups 배열)도 처리할 수 있도록 legacyGroupsToFlat() 를 제공한다.
+ */
+function beatsToFlat(beats) {
+  const flat = [];
+  let prevMeasure = -1;
+  beats.forEach((beat, beatIdx) => {
+    const isNewMeasure = beat.measureNumber !== prevMeasure;
+    prevMeasure = beat.measureNumber;
+    (beat.notes ?? []).forEach((note, i) => {
+      flat.push({
+        note,
+        beatNumber:     beat.beatNumber,
+        beatIdx,                          // 재생 커서용 박 인덱스
+        isBeatStart:    i === 0,
+        isMeasureStart: isNewMeasure && i === 0,
+      });
+    });
+  });
+  return flat;
+}
+
+/** 구 형식 data.groups → flat 변환 (기존 기록 호환용) */
+function legacyGroupsToFlat(groups) {
+  return groups.map((g, idx) => ({
+    note:           g,          // 구 형식 group 자체를 note 역할로 사용
+    beatNumber:     Math.round(g.beatPosition ?? 0) + 1,
+    isBeatStart:    true,       // 구 형식은 모든 칸에 박 번호 표시 (기존 동작 유지)
+    isMeasureStart: (g.isNewMeasure ?? false) && idx > 0,
+  }));
+}
+
 function renderScore(data) {
-  const area = $('scoreArea');
+  if (!data) return;
+  stopPlayback();   // 악보가 다시 그려지면 재생 중단
+
+  // 새 형식(beats) 우선, 구 형식(groups) 폴백
+  const flat = (data.beats
+    ? beatsToFlat(data.beats)
+    : legacyGroupsToFlat(data.groups ?? [])) ?? [];
+
+  const area   = $('scoreArea');
+  const cursor = $('cursorLine');   // innerHTML 초기화 전에 참조 저장
   area.innerHTML = '';
+  if (cursor) area.appendChild(cursor);  // 지워진 커서 다시 붙이기
   const perSystem = 24;
-  const systems = Math.max(1, Math.ceil(data.groups.length / perSystem));
+  const systems = Math.max(1, Math.ceil(flat.length / perSystem));
 
   for (let sys = 0; sys < systems; sys++) {
     const start = sys * perSystem;
-    const end = Math.min(start + perSystem, data.groups.length);
-    const systemGroups = data.groups.slice(start, end);
+    const end   = Math.min(start + perSystem, flat.length);
+    const slice = flat.slice(start, end);
     const systemEl = document.createElement('div');
     systemEl.className = 'system';
+
+    /* ── 박자 행 ── */
+    const beatRow = document.createElement('div');
+    beatRow.className = 'beat-row';
+    const beatSpacer = document.createElement('div');
+    beatSpacer.style.cssText = 'width:32px;flex-shrink:0';
+    beatRow.appendChild(beatSpacer);
+
+    const beatTrack = document.createElement('div');
+    beatTrack.className = 'beat-track';
+
+    slice.forEach((item, idx) => {
+      const cell = document.createElement('div');
+      const isBarStart = item.isMeasureStart && idx > 0;
+      cell.className = 'beat-cell' + (isBarStart ? ' bar-start' : '');
+      if (item.isBeatStart) {
+        cell.textContent = item.beatNumber;
+        if (item.beatIdx != null) cell.dataset.beatIdx = item.beatIdx;
+      }
+      beatTrack.appendChild(cell);
+    });
+
+    beatRow.appendChild(beatTrack);
+    systemEl.appendChild(beatRow);
+
+    /* ── 줄 영역 ── */
     const rows = document.createElement('div');
     rows.className = 'string-rows';
 
@@ -576,11 +759,15 @@ function renderScore(data) {
       track.className = 'track';
       track.innerHTML = '<div class="line"></div><div class="bar" style="left:0"></div><div class="bar" style="right:0"></div>';
 
-      systemGroups.forEach(group => {
+      slice.forEach((item, idx) => {
+        const note = item.note;
+        const isBarStart = item.isMeasureStart && idx > 0;
         const cell = document.createElement('div');
-        cell.className = 'cell';
-        const pos = group.positions.find(p => p.stringIndex === s);
-        if (!group.isRest && pos) {
+        cell.className = 'cell' + (isBarStart ? ' bar-start' : '');
+
+        // 새 형식: note.positions / 구 형식: note.positions (동일 필드명)
+        const pos = (note.positions ?? []).find(p => p.stringIndex === s);
+        if (!note.isRest && pos) {
           const fretNum = pos.fret + transposeSteps;
           if (fretNum >= 0) {
             const fret = document.createElement('div');
@@ -599,7 +786,7 @@ function renderScore(data) {
     systemEl.appendChild(rows);
     const index = document.createElement('div');
     index.className = 'system-index';
-    index.textContent = `${start + 1} - ${end}`;
+    index.textContent = `${start + 1} – ${end}`;
     systemEl.appendChild(index);
     area.appendChild(systemEl);
   }
@@ -611,7 +798,7 @@ function renderScore(data) {
 
 /* ── 통계 업데이트 ───────────────────────────────────────── */
 function updateStats(data) {
-  $('statusBeats').textContent = `${data.beatCount} 박자`;
+  $('statusBeats').textContent = `${data.beatCount ?? (data.beats?.length ?? 0)} 박`;
   $('statusNotes').textContent = `${data.noteCount} 음표`;
 }
 
@@ -667,17 +854,22 @@ async function downloadPng() {
 /* ── 텍스트 타브 ─────────────────────────────────────────── */
 function showTextTab() {
   if (!currentResult) return;
+  // 새 형식(beats) 우선, 구 형식(groups) 폴백으로 flat 노트 목록 만들기
+  const flat = currentResult.beats
+    ? currentResult.beats.flatMap(b => b.notes ?? [])
+    : (currentResult.groups ?? []);
+
   const lines = [];
-  lines.push(`${currentResult.beatCount} beats, ${currentResult.noteCount} notes, dropped ${currentResult.droppedCount}`);
+  lines.push(`beats: ${currentResult.beatCount ?? flat.length}  notes: ${currentResult.noteCount}  dropped: ${currentResult.droppedCount}`);
   lines.push('');
 
-  for (let start = 0; start < currentResult.groups.length; start += 16) {
-    const end = Math.min(start + 16, currentResult.groups.length);
+  for (let start = 0; start < flat.length; start += 16) {
+    const end = Math.min(start + 16, flat.length);
     for (let s = 0; s < 6; s++) {
       let row = STRING_NAMES[s] + '|';
       for (let i = start; i < end; i++) {
-        const group = currentResult.groups[i];
-        const pos = group.positions.find(p => p.stringIndex === s);
+        const note = flat[i];
+        const pos = (note.positions ?? []).find(p => p.stringIndex === s);
         row += pos ? '-' + String(pos.fret + transposeSteps).padEnd(3, '-') : '----';
       }
       lines.push(row + '|');
@@ -743,8 +935,13 @@ function renderHistoryList() {
       <div class="history-info">
         <div class="history-name" title="${escHtml(item.fileName)}">${escHtml(item.fileName)}</div>
         <div class="history-meta">${formatTime(item.convertedAt)}${transposeLabel}</div>
-      </div>`;
+      </div>
+      <button class="btn-icon history-item-del" data-id="${item.id}" title="삭제">✕</button>`;
 
+    el.querySelector('.history-item-del').addEventListener('click', e => {
+      e.stopPropagation();
+      deleteHistoryItem(item.id);
+    });
     el.addEventListener('click', () => loadHistoryItem(item.id));
     list.appendChild(el);
   });
@@ -774,7 +971,8 @@ async function loadHistoryItem(id) {
     $('sourceEmpty').style.display = 'flex';
     $('downloadBtn').disabled = false;
     $('consoleBtn').disabled = false;
-    $('reconvertBtn').disabled = true;    // 파일 없으므로 비활성
+    $('reconvertBtn').disabled = false;
+    $('playBtn').disabled = false;
     $('keyUpBtn').disabled = false;
     $('keyDownBtn').disabled = false;
     setStatus('기록에서 불러옴', 'ok');
@@ -784,6 +982,45 @@ async function loadHistoryItem(id) {
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
     document.querySelector('[data-view="scoreView"]').classList.add('active');
     $('scoreView').classList.add('active');
+  } catch { /* non-fatal */ }
+}
+
+/* ── 기록 삭제 ──────────────────────────────────────────── */
+async function deleteHistoryItem(id) {
+  try {
+    const res = await fetch(`/api/history/${id}`, { method: 'DELETE' });
+    if (!res.ok) return;
+    historyItems = historyItems.filter(h => h.id !== id);
+    // 현재 보고 있던 기록이 삭제된 경우 초기화
+    if (currentHistoryId === id) {
+      currentHistoryId = null;
+      currentHistoryPngUrl = null;
+      currentResult = null;
+      $('scoreArea').style.display = 'none';
+      $('dropZone').style.display = 'flex';
+      $('dropZone').querySelector('strong').textContent = 'PNG 악보를 선택하세요';
+      $('downloadBtn').disabled = true;
+      $('consoleBtn').disabled = true;
+      $('reconvertBtn').disabled = true;
+      $('keyUpBtn').disabled = true;
+      $('keyDownBtn').disabled = true;
+      $('fileName').textContent = '선택된 파일 없음';
+      setStatus('대기 중', '');
+    }
+    renderHistoryList();
+  } catch { /* non-fatal */ }
+}
+
+async function clearAllHistory() {
+  if (!historyItems.length) return;
+  if (!confirm('변환 기록을 모두 삭제할까요?')) return;
+  try {
+    const res = await fetch('/api/history', { method: 'DELETE' });
+    if (!res.ok) return;
+    historyItems = [];
+    currentHistoryId = null;
+    currentHistoryPngUrl = null;
+    renderHistoryList();
   } catch { /* non-fatal */ }
 }
 
@@ -804,7 +1041,105 @@ function escHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+/* ═══════════════════════════════════════════════════════════
+   노래방 재생 커서
+   ═══════════════════════════════════════════════════════════ */
+
+let isPlaying   = false;
+let playRafId   = null;
+let playStartMs = 0;
+
+$('playBtn').addEventListener('click', () => {
+  if (isPlaying) stopPlayback();
+  else           startPlayback();
+});
+
+function startPlayback() {
+  if (!currentResult?.beats?.length) return;
+  stopPlayback();
+
+  isPlaying   = true;
+  playStartMs = performance.now();
+  $('playBtn').textContent = '⏹ 정지';
+  const cl = $('cursorLine');
+  if (cl) cl.style.display = 'block';
+  playRafId = requestAnimationFrame(tickPlayback);
+}
+
+function stopPlayback() {
+  isPlaying = false;
+  if (playRafId) { cancelAnimationFrame(playRafId); playRafId = null; }
+  $('playBtn').textContent = '▶ 재생';
+  const cl2 = $('cursorLine');
+  if (cl2) cl2.style.display = 'none';
+}
+
+function tickPlayback(now) {
+  if (!isPlaying) return;
+
+  const bpm          = currentResult.bpm          ?? 120;
+  const beatSizeInQN = currentResult.beatSizeInQN  ?? 1.0;
+  const beatDurMs    = (60000 / bpm) * beatSizeInQN;
+
+  const elapsed    = now - playStartMs;
+  const beatFloat  = elapsed / beatDurMs;
+  const beatIdx    = Math.floor(beatFloat);
+  const fraction   = beatFloat - beatIdx;   // 0.0 ~ 1.0 (박 안에서의 진행률)
+  const totalBeats = currentResult.beats.length;
+
+  if (beatIdx >= totalBeats) { stopPlayback(); return; }
+
+  const scoreArea = $('scoreArea');
+  const curCell  = scoreArea.querySelector(`[data-beat-idx="${beatIdx}"]`);
+  const nextCell = scoreArea.querySelector(`[data-beat-idx="${beatIdx + 1}"]`);
+
+  if (curCell) moveCursorSmooth(curCell, nextCell, fraction);
+
+  playRafId = requestAnimationFrame(tickPlayback);
+}
+
+function moveCursorSmooth(curCell, nextCell, fraction) {
+  const scoreArea = $('scoreArea');
+  const scoreView = $('scoreView');
+  const cursor    = $('cursorLine');
+  if (!cursor) return;
+
+  const system = curCell.closest('.system');
+  if (!system) return;
+
+  const aRect = scoreArea.getBoundingClientRect();
+  const cRect = curCell.getBoundingClientRect();
+  const sRect = system.getBoundingClientRect();
+
+  let left = cRect.left - aRect.left;
+
+  // 다음 박이 같은 시스템 안에 있으면 x를 선형 보간
+  if (nextCell) {
+    const nextSystem = nextCell.closest('.system');
+    if (nextSystem === system) {
+      const nRect = nextCell.getBoundingClientRect();
+      const nextLeft = nRect.left - aRect.left;
+      left = left + (nextLeft - left) * fraction;
+    }
+    // 다음 박이 다음 시스템이면 현재 박 위치에 머물다가 시스템 교체 시 스냅
+  }
+
+  cursor.style.left   = left + 'px';
+  cursor.style.top    = (sRect.top - aRect.top) + 'px';
+  cursor.style.height = sRect.height + 'px';
+
+  // 현재 시스템이 뷰 밖이면 자동 스크롤
+  const viewRect   = scoreView.getBoundingClientRect();
+  const sysRelTop  = sRect.top - viewRect.top;
+  if (sysRelTop < 20) {
+    scoreView.scrollTop += sysRelTop - 30;
+  } else if (sysRelTop + sRect.height > scoreView.clientHeight - 20) {
+    scoreView.scrollTop += sysRelTop + sRect.height - scoreView.clientHeight + 30;
+  }
+}
+
 /* ── 초기화 ─────────────────────────────────────────────── */
+$('clearHistoryBtn').addEventListener('click', clearAllHistory);
 loadHistory();
 </script>
 </body>
