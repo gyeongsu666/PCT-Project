@@ -1,154 +1,194 @@
 """
-oemer 패치 스크립트 (v4)
-========================
-두 가지 버그를 한 번에 패치합니다.
-
-  1. build_system.py  — get_key()의 sfns_cands 빈 리스트 IndexError
-  2. rhythm_extraction.py — scan_beam_flag()의 hit 변수 UnboundLocalError
-
-기존 패치가 있으면 백업에서 복원 후 재패치합니다.
+oemer 패치 스크립트
+1. [build_system.py] slot_duras numpy array 비교 버그 (ValueError)
+2. [build_system.py] last_pos - cur_pos 정수 오버플로 (RuntimeWarning)
+3. [sklearn] SVC pickle 버전 불일치 경고 억제 (InconsistentVersionWarning)
+4. [build_system.py] invalid 음표 드랍 방지 → 그대로 포함
+5. [build_system.py] 옥타브 범위 초과 음표 드랍 방지 → 가장 가까운 유효 음으로 클램핑
 """
-
 import importlib.util
 import pathlib
-import shutil
 import sys
 
-PATCH_MARKER = "# [PCT-patch]"
+# ---------------------------------------------------------------------------
+# 헬퍼
+# ---------------------------------------------------------------------------
 
-
-# ─────────────────────────────────────────────────────────────────
-# 공통 유틸
-# ─────────────────────────────────────────────────────────────────
-
-def find_oemer_file(relative: str) -> pathlib.Path:
-    spec = importlib.util.find_spec("oemer")
+def find_module(name: str) -> pathlib.Path:
+    spec = importlib.util.find_spec(name)
     if spec is None:
-        sys.exit("❌ oemer 패키지를 찾을 수 없습니다.")
-    path = pathlib.Path(spec.origin).parent / relative
-    if not path.exists():
-        sys.exit(f"❌ 파일 없음: {path}")
-    return path
+        sys.exit(f"❌ 모듈을 찾을 수 없습니다: {name}")
+    return pathlib.Path(spec.origin)
 
+def apply_patch(path: pathlib.Path, old: str, new: str, label: str) -> bool:
+    text = path.read_text(encoding="utf-8")
+    if new in text:
+        print(f"  ℹ️  이미 패치됨: {label}")
+        return False
+    if old not in text:
+        print(f"  ⚠️  대상 라인 없음 (oemer 버전 불일치?): {label}")
+        return False
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    print(f"  ✅ 패치 완료: {label}")
+    return True
 
-def restore_if_needed(path: pathlib.Path) -> str:
-    """기존 패치가 있으면 백업에서 원본을 복원한다."""
-    backup = path.with_suffix(".py.bak")
-    content = path.read_text(encoding="utf-8")
-    if PATCH_MARKER in content:
-        if not backup.exists():
-            sys.exit(
-                f"❌ 이전 패치가 감지됐지만 백업 파일이 없습니다: {backup}\n"
-                "수동으로 복원하세요."
-            )
-        shutil.copy2(backup, path)
-        print(f"♻️  이전 패치 제거 후 원본 복원: {path}")
-        return path.read_text(encoding="utf-8")
-    return content
+# ---------------------------------------------------------------------------
+# 패치 정의
+# ---------------------------------------------------------------------------
 
+PATCHES = [
+    # 1. slot_duras numpy array 비교 (ValueError)
+    {
+        "module": "oemer.build_system",
+        "label": "slot_duras numpy array guard",
+        "old_patterns": [
+            "if not self.slot_duras:  # [PCT-patch] slot_duras NoneType guard",
+            "if not self.slot_duras:",
+        ],
+        "new": "if self.slot_duras is None or not len(self.slot_duras):  # [PCT-patch] numpy array safe guard",
+    },
+    # 2. last_pos - cur_pos 정수 오버플로 (RuntimeWarning → 잘못된 결과)
+    {
+        "module": "oemer.build_system",
+        "label": "overflow-safe pos diff",
+        "old_patterns": [
+            "diff = last_pos - cur_pos",
+        ],
+        "new": "diff = int(last_pos) - int(cur_pos)  # [PCT-patch] cast to Python int to avoid numpy overflow",
+    },
+    # 4. invalid 음표 드랍 방지: decode_note에서 note.invalid 시 None 반환하던 것 제거
+    {
+        "module": "oemer.build_system",
+        "label": "invalid note drop prevention",
+        "old_patterns": [
+            "    if note.invalid:\n        return None  # type: ignore\n\n    # Element order matters!!",
+        ],
+        "new": (
+            "    # [PCT-patch] invalid 음표도 드랍하지 않고 staff_line_pos 기반으로 그대로 포함\n"
+            "    # (note.invalid=True 여도 위치 정보는 있으므로 최선의 음으로 출력)\n\n"
+            "    # Element order matters!!"
+        ),
+    },
+    # 5. 옥타브 범위 초과 음표 클램핑: None 반환 대신 가장 가까운 유효 음으로 조정
+    {
+        "module": "oemer.build_system",
+        "label": "out-of-range octave clamping",
+        "old_patterns": [
+            "    # Check the pitch is within A0~C8\n"
+            "    if (int(octave.text) < 0 or int(octave.text) > 8) \\\n"
+            "            or (int(octave.text) == 0 and step.text != \"A\") \\\n"
+            "            or (int(octave.text) == 8 and step.text != \"C\"):\n"
+            "        return None  # type: ignore",
+        ],
+        "new": (
+            "    # [PCT-patch] 범위 초과 시 드랍 대신 가장 가까운 유효 음으로 클램핑\n"
+            "    _oct = int(octave.text)\n"
+            "    if _oct < 0:\n"
+            "        octave.text, step.text, alter.text = '0', 'A', '0'\n"
+            "    elif _oct > 8:\n"
+            "        octave.text, step.text, alter.text = '8', 'C', '0'\n"
+            "    elif _oct == 0 and step.text != 'A':\n"
+            "        octave.text = '1'\n"
+            "    elif _oct == 8 and step.text != 'C':\n"
+            "        octave.text = '7'"
+        ),
+    },
+    # 6. 음표 없는 마디 스킵: 오탐 바라인으로 생기는 빈/쪼개진 마디를 다음 마디에 합침
+    {
+        "module": "oemer.build_system",
+        "label": "empty measure merge (too many measures fix)",
+        "old_patterns": [
+            "                if isinstance(inst, Barline):\n"
+            "                    if len(buffer) == 0:\n"
+            "                        # Double barline\n"
+            "                        double_barline = True\n"
+            "                    else:\n"
+            "                        mm = gen_measure(buffer, grp, num, at_beginning, double_barline)\n"
+            "                        self.measures[grp].append(mm)\n"
+            "\n"
+            "                        num += 1\n"
+            "                        buffer = []\n"
+            "                        at_beginning = False\n"
+            "                        double_barline = False\n"
+            "                    continue",
+        ],
+        "new": (
+            "                if isinstance(inst, Barline):\n"
+            "                    if len(buffer) == 0:\n"
+            "                        # Double barline\n"
+            "                        double_barline = True\n"
+            "                    elif not any(isinstance(s, Voice) for s in buffer):\n"
+            "                        # [PCT-patch] 음표(Voice) 없는 마디는 확정하지 않고 다음 마디에 합침\n"
+            "                        # (오탐 바라인으로 생긴 빈 마디 제거)\n"
+            "                        pass\n"
+            "                    else:\n"
+            "                        mm = gen_measure(buffer, grp, num, at_beginning, double_barline)\n"
+            "                        self.measures[grp].append(mm)\n"
+            "\n"
+            "                        num += 1\n"
+            "                        buffer = []\n"
+            "                        at_beginning = False\n"
+            "                        double_barline = False\n"
+            "                    continue"
+        ),
+    },
+]
 
-def apply_patch(path: pathlib.Path, content: str,
-                target_line: str, new_lines_fn) -> None:
-    """
-    content 에서 target_line 을 찾아 그 앞에 new_lines_fn(indent, eol) 의
-    반환값(list[str])을 삽입한다.
-    """
-    lines = content.splitlines(keepends=True)
+# ---------------------------------------------------------------------------
+# sklearn InconsistentVersionWarning 억제 패치 (oemer/__init__.py 또는 ete.py)
+# ---------------------------------------------------------------------------
 
-    target_idx = None
-    for i, line in enumerate(lines):
-        if target_line in line:
-            target_idx = i
-            break
+SKLEARN_SUPPRESS = '''\
+import warnings as _warnings
+from sklearn.exceptions import InconsistentVersionWarning as _IVW
+_warnings.filterwarnings("ignore", category=_IVW)
+# [PCT-patch] suppress SVC pickle version mismatch warning
+'''
 
-    if target_idx is None:
-        print(f"⚠️  대상 라인을 찾지 못했습니다 (이미 수정됐거나 버전이 다름): '{target_line}'")
+def patch_sklearn_warning():
+    # oemer/ete.py 상단에 경고 억제 코드 삽입
+    try:
+        ete_path = find_module("oemer.ete")
+    except SystemExit:
+        print("  ⚠️  oemer.ete 모듈을 찾을 수 없어 sklearn 경고 억제 패치 생략")
         return
 
-    original_line = lines[target_idx]
+    text = ete_path.read_text(encoding="utf-8")
+    marker = "# [PCT-patch] suppress SVC pickle version mismatch warning"
+    if marker in text:
+        print("  ℹ️  이미 패치됨: sklearn InconsistentVersionWarning 억제")
+        return
 
-    # 들여쓰기·줄 끝 감지
-    indent = ""
-    for ch in original_line:
-        if ch in (" ", "\t"):
-            indent += ch
-        else:
+    # 첫 번째 import 줄 앞에 삽입
+    lines = text.splitlines(keepends=True)
+    insert_at = 0
+    for i, line in enumerate(lines):
+        if line.startswith("import ") or line.startswith("from "):
+            insert_at = i
             break
-    eol = "\r\n" if original_line.endswith("\r\n") else "\n"
+    lines.insert(insert_at, SKLEARN_SUPPRESS)
+    ete_path.write_text("".join(lines), encoding="utf-8")
+    print("  ✅ 패치 완료: sklearn InconsistentVersionWarning 억제")
 
-    inserted = new_lines_fn(indent, eol)
-
-    # 백업 (원본이 아직 없을 때만)
-    backup = path.with_suffix(".py.bak")
-    if not backup.exists():
-        shutil.copy2(path, backup)
-        print(f"📦 백업 저장: {backup}")
-
-    lines[target_idx:target_idx] = inserted
-    new_content = "".join(lines)
-
-    # 문법 검사
-    try:
-        compile(new_content, str(path), "exec")
-    except SyntaxError as e:
-        sys.exit(f"❌ 패치 후 문법 오류: {e}\n수동 확인이 필요합니다.")
-
-    path.write_text(new_content, encoding="utf-8")
-    print(f"✅ 패치 완료 (line {target_idx + 1}): {path}")
-
-
-# ─────────────────────────────────────────────────────────────────
-# 패치 1: build_system.py — sfns_cands 빈 리스트 guard
-# ─────────────────────────────────────────────────────────────────
-
-def patch_build_system():
-    path = find_oemer_file("build_system.py")
-    print(f"\n🔍 [1/2] 대상: {path}")
-    content = restore_if_needed(path)
-
-    def make_lines(indent, eol):
-        return [
-            f"{indent}if not sfns_cands:  {PATCH_MARKER} empty sfns_cands guard{eol}",
-            f"{indent}    import types{eol}",
-            f"{indent}    return types.SimpleNamespace(value=0, label=0){eol}",
-        ]
-
-    apply_patch(path, content,
-                target_line="sfn_label = sfns_cands[0].label",
-                new_lines_fn=make_lines)
-
-
-# ─────────────────────────────────────────────────────────────────
-# 패치 2: rhythm_extraction.py — scan_beam_flag hit UnboundLocalError
-#
-# 원인: hit 변수가 루프 안의 조건 분기에서만 설정되는데,
-#       루프가 한 번도 해당 분기를 통과하지 않으면 UnboundLocalError.
-# 수정: scan_beam_flag 함수 내부에서 hit = False 를 삽입하는 줄
-#       바로 앞에(= 사용되는 첫 줄 앞에) 초기화 구문을 추가한다.
-# ─────────────────────────────────────────────────────────────────
-
-def patch_rhythm_extraction():
-    path = find_oemer_file("rhythm_extraction.py")
-    print(f"\n🔍 [2/2] 대상: {path}")
-    content = restore_if_needed(path)
-
-    def make_lines(indent, eol):
-        # Python은 함수 내 어딘가에 hit 할당이 있으면 컴파일 타임에
-        # 지역변수로 분류 → 루프를 안 타면 UnboundLocalError.
-        # try/except UnboundLocalError 로 안전하게 초기화한다.
-        return [
-            f"{indent}try: hit  {PATCH_MARKER} UnboundLocalError guard{eol}",
-            f"{indent}except UnboundLocalError: hit = False{eol}",
-        ]
-
-    apply_patch(path, content,
-                target_line="beam_count = math.ceil(width / max_width) if hit else 1",
-                new_lines_fn=make_lines)
-
-
-# ─────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# 실행
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    patch_build_system()
-    patch_rhythm_extraction()
-    print("\n✨ 모든 패치 완료. 서버를 재시작한 뒤 다시 변환해보세요.")
+    print("=== oemer 패치 시작 ===\n")
+
+    patched_files: dict[str, pathlib.Path] = {}
+
+    for p in PATCHES:
+        mod_path = find_module(p["module"])
+        patched_files[p["module"]] = mod_path
+        print(f"[{p['label']}]  {mod_path}")
+        for old in p["old_patterns"]:
+            if apply_patch(mod_path, old, p["new"], p["label"]):
+                break
+
+    print(f"\n[sklearn 경고 억제]")
+    patch_sklearn_warning()
+
+    print("\n=== 완료 ===")
+
