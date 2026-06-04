@@ -9,6 +9,9 @@ public class NoteGroup
     public List<Note> Notes { get; set; } = new();
     public bool IsRest => Notes.Count == 0 || Notes.All(n => n.IsRest);
 
+    /// <summary>이 음표 이벤트의 길이 (4분음표 단위). 4분음표=1.0, 8분음표=0.5, 2분음표=2.0.</summary>
+    public double DurationInQN { get; set; } = 1.0;
+
     public override string ToString()
     {
         if (IsRest) return "Rest";

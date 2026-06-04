@@ -10,6 +10,12 @@ public class MusicXmlParser
     /// <summary>Parse() 호출 후 1박의 크기 (4분음표 단위). 4/4 → 1.0, 6/8 → 0.5.</summary>
     public double BeatSizeInQN { get; private set; } = 1.0;
 
+    /// <summary>Parse() 호출 후 박자표 분자 (4/4 → 4, 6/8 → 6). 기본값 4.</summary>
+    public int BeatsPerMeasure { get; private set; } = 4;
+
+    /// <summary>Parse() 호출 후 박자표 분모 (4/4 → 4, 6/8 → 8). 기본값 4.</summary>
+    public int BeatType { get; private set; } = 4;
+
     public List<MeasureBeat> Parse(Stream stream)
     {
         Bpm = 120; BeatSizeInQN = 1.0;
@@ -36,6 +42,23 @@ public class MusicXmlParser
         double beatSizeInQN  = 1.0;  // 1박의 크기 (4분음표 단위)
         double qnAccumulator = 0;    // 마디 내 4분음표 누산기
         double bpm           = 120;  // <sound tempo="..."> 에서 읽음
+
+        int    beatsPerMeasure = 4;    // 박자표 분자 (4/4 → 4, 6/8 → 6)
+        double measureLengthQN = 4.0;  // 한 마디 길이 (4분음표 단위) = 분자 × beatSizeInQN
+
+        // 누산기가 마디 길이를 넘었으면 그만큼 다음 마디로 넘긴다 (지연 마디 분할).
+        // 음표 배치 '직전'에 호출하므로, <backup>이 먼저 누산기를 되감으면 분할은 일어나지
+        // 않는다 → 다성부(backup으로 voice 2를 같은 마디에 겹쳐 쓰는 경우)가 보존된다.
+        void NormalizeMeasure()
+        {
+            while (measureLengthQN > 0 && qnAccumulator >= measureLengthQN - 1e-9)
+            {
+                measureNumber++;
+                qnAccumulator   -= measureLengthQN;
+                currentNoteGroup = null;
+            }
+            if (qnAccumulator < 0) qnAccumulator = 0;
+        }
 
         while (reader.Read())
         {
@@ -74,16 +97,24 @@ public class MusicXmlParser
                 case "time":
                 {
                     using var timeReader = reader.ReadSubtree();
+                    int beatsNum = 0;
                     while (timeReader.Read())
                     {
                         if (timeReader.NodeType != XmlNodeType.Element) continue;
-                        if (timeReader.LocalName == "beat-type" &&
+                        if (timeReader.LocalName == "beats" &&
+                            int.TryParse(timeReader.ReadElementContentAsString(), out int bn) && bn > 0)
+                        {
+                            beatsNum = bn;
+                        }
+                        else if (timeReader.LocalName == "beat-type" &&
                             int.TryParse(timeReader.ReadElementContentAsString(), out int bt) && bt > 0)
                         {
                             beatType     = bt;
                             beatSizeInQN = 4.0 / beatType;  // 1박 = 4분음표 몇 개
                         }
                     }
+                    if (beatsNum > 0) beatsPerMeasure = beatsNum;
+                    measureLengthQN = beatsPerMeasure * beatSizeInQN;  // 한 마디 길이(4분음표 단위)
                     break;
                 }
 
@@ -98,7 +129,12 @@ public class MusicXmlParser
                         if (bkReader.LocalName == "duration" &&
                             int.TryParse(bkReader.ReadElementContentAsString(), out int bkDur) && bkDur > 0)
                         {
-                            qnAccumulator = Math.Max(0, qnAccumulator - (double)bkDur / divisions);
+                            // 비정상적으로 큰 backup(OCR 잡음)은 마디 시작으로 되감기
+                            double bkQN = (double)bkDur / divisions;
+                            double cap  = measureLengthQN > 0 ? measureLengthQN : 16.0;
+                            qnAccumulator = bkQN <= cap + 1e-9
+                                ? Math.Max(0, qnAccumulator - bkQN)
+                                : 0;
                             currentNoteGroup = null;  // 성부 전환 시 화음 누적 리셋
                         }
                     }
@@ -115,7 +151,11 @@ public class MusicXmlParser
                         if (fwdReader.LocalName == "duration" &&
                             int.TryParse(fwdReader.ReadElementContentAsString(), out int fwdDur) && fwdDur > 0)
                         {
-                            qnAccumulator += (double)fwdDur / divisions;
+                            // 비정상적으로 큰 forward(OCR 잡음)는 무시. 마디 넘김은 다음 음표 배치 때 처리.
+                            double fwdQN = (double)fwdDur / divisions;
+                            double cap   = measureLengthQN > 0 ? measureLengthQN : 16.0;
+                            if (fwdQN <= cap + 1e-9)
+                                qnAccumulator += fwdQN;
                         }
                     }
                     break;
@@ -181,6 +221,11 @@ public class MusicXmlParser
                     }
                     else
                     {
+                        // 박자표 기반 지연 마디 분할: 새 음표를 놓기 전에 누산기가 마디를
+                        // 넘겼으면 그때 마디를 넘긴다. <backup>이 먼저 되감았다면 분할되지 않아
+                        // 다성부가 같은 마디에 유지된다.
+                        NormalizeMeasure();
+
                         // 새 음표 이벤트: 정수 박 번호 계산
                         // 1e-9 epsilon: 부동소수점 오차로 박 경계를 살짝 넘는 경우 방지
                         int beatNumber = (int)(qnAccumulator / beatSizeInQN + 1e-9) + 1;
@@ -199,6 +244,7 @@ public class MusicXmlParser
                         }
 
                         var ng = new NoteGroup();
+                        ng.DurationInQN = durationInQN;
                         ng.Notes.Add(note);
                         currentBeat.Notes.Add(ng);
                         currentNoteGroup = ng;
@@ -212,8 +258,10 @@ public class MusicXmlParser
         }
 
         // 파싱 완료 후 인스턴스 프로퍼티에 저장
-        Bpm         = bpm;
-        BeatSizeInQN = beatSizeInQN;
+        Bpm             = bpm;
+        BeatSizeInQN    = beatSizeInQN;
+        BeatsPerMeasure = beatsPerMeasure;
+        BeatType        = beatType;
         return beats;
     }
 }

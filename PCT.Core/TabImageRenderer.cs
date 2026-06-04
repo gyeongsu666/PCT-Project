@@ -17,6 +17,8 @@ public class TabImageRenderer
     private const int BeatRowHeight    = 22;
     private const float StringLineWidth = 1.2f;
     private const float BarLineWidth    = 1.8f;
+    private const int   RhythmGap       = 7;     // 스태프 아래 리듬 표기까지 여백
+    private const float StemLength      = 14f;   // 리듬 기둥 길이
 
     // 렌더링을 위해 flat하게 펼친 음표 단위
     private record RenderNote(
@@ -127,6 +129,24 @@ public class TabImageRenderer
         {
             Color = SKColors.White, Style = SKPaintStyle.Fill, IsAntialias = true
         };
+        using var rhythmStemPaint = new SKPaint
+        {
+            Color = new SKColor(70, 70, 70), IsAntialias = true,
+            StrokeWidth = 1.2f, Style = SKPaintStyle.Stroke
+        };
+        using var rhythmFillPaint = new SKPaint
+        {
+            Color = new SKColor(70, 70, 70), IsAntialias = true, Style = SKPaintStyle.Fill
+        };
+        using var rhythmOpenPaint = new SKPaint
+        {
+            Color = new SKColor(70, 70, 70), IsAntialias = true,
+            StrokeWidth = 1.2f, Style = SKPaintStyle.Stroke
+        };
+        using var restPaint = new SKPaint
+        {
+            Color = new SKColor(120, 120, 120), IsAntialias = true, Style = SKPaintStyle.Fill
+        };
 
         int   noteCount    = endNote - startNote;
         float systemStartX = MarginLeft + StringLabelWidth;
@@ -172,8 +192,18 @@ public class TabImageRenderer
             if (rn.IsBeatStart)
                 canvas.DrawText(rn.BeatNumber.ToString(), x, beatTextY, beatPaint);
 
+            // 리듬 표기 (음표·쉼표 공통): 스태프 아래 기둥/꼬리
+            DrawRhythm(canvas, x, barBottom + RhythmGap, rn.Group.DurationInQN,
+                       rhythmStemPaint, rhythmFillPaint, rhythmOpenPaint);
+
+            // 쉼표: 스태프 중앙에 기호
+            if (rn.Group.IsRest)
+            {
+                DrawRest(canvas, x, stringAreaY, restPaint);
+                continue;
+            }
+
             // 프렛 번호
-            if (rn.Group.IsRest) continue;
             foreach (var pos in rn.Group.Positions)
             {
                 if (pos.IsUnplayable) continue;
@@ -199,6 +229,71 @@ public class TabImageRenderer
             x + bounds.Width / 2 + padX, stringY + textHeight / 2 + padY);
         canvas.DrawRect(bgRect, whiteBg);
         canvas.DrawText(fretStr, x, baselineY, fretPaint);
+    }
+
+    // 음표 길이(4분음표 단위) → 리듬 표기 분류 (꼬리 수, 점음표, 빈머리, 기둥유무)
+    private static (int flags, bool dotted, bool hollow, bool stem) ClassifyDuration(double qn)
+    {
+        (double dur, int flags, bool dotted, bool hollow, bool stem)[] table =
+        {
+            (4.0,    0, false, true,  false), // 온음표
+            (3.0,    0, true,  true,  true),  // 점2분음표
+            (2.0,    0, false, true,  true),  // 2분음표
+            (1.5,    0, true,  false, true),  // 점4분음표
+            (1.0,    0, false, false, true),  // 4분음표
+            (0.75,   1, true,  false, true),  // 점8분음표
+            (0.5,    1, false, false, true),  // 8분음표
+            (0.375,  2, true,  false, true),  // 점16분음표
+            (0.25,   2, false, false, true),  // 16분음표
+            (0.1875, 3, true,  false, true),  // 점32분음표
+            (0.125,  3, false, false, true),  // 32분음표
+        };
+
+        var    best     = table[0];
+        double bestDiff = double.MaxValue;
+        foreach (var t in table)
+        {
+            double diff = Math.Abs(t.dur - qn);
+            if (diff < bestDiff) { bestDiff = diff; best = t; }
+        }
+        return (best.flags, best.dotted, best.hollow, best.stem);
+    }
+
+    // 스태프 아래에 리듬(기둥·꼬리·점)을 그린다. 프렛 숫자가 음표 머리 역할.
+    private void DrawRhythm(SKCanvas canvas, float x, float topY, double durationInQN,
+                            SKPaint stemPaint, SKPaint fillPaint, SKPaint openPaint)
+    {
+        var (flags, dotted, hollow, stem) = ClassifyDuration(durationInQN);
+        const float headR = 2.6f;
+
+        // 머리: 2분·온음표는 빈 원, 그 외는 채운 원
+        if (hollow) canvas.DrawCircle(x, topY, headR, openPaint);
+        else        canvas.DrawCircle(x, topY, headR, fillPaint);
+
+        if (stem)
+        {
+            float stemBottom = topY + StemLength;
+            canvas.DrawLine(x, topY, x, stemBottom, stemPaint);
+
+            // 꼬리: 8분음표=1, 16분음표=2 ...
+            for (int f = 0; f < flags; f++)
+            {
+                float fy = stemBottom - f * 4f;
+                canvas.DrawLine(x, fy, x + 6f, fy - 4f, stemPaint);
+            }
+        }
+
+        // 점음표
+        if (dotted)
+            canvas.DrawCircle(x + headR + 4f, topY, 1.4f, fillPaint);
+    }
+
+    // 쉼표 표식 (스태프 중앙). 길이는 리듬 레인의 꼬리로 구분.
+    private void DrawRest(SKCanvas canvas, float x, float stringAreaY, SKPaint restPaint)
+    {
+        float midY = stringAreaY + 2.5f * StringSpacing;
+        var   rect = new SKRect(x - 3.5f, midY - 5f, x + 3.5f, midY + 5f);
+        canvas.DrawRect(rect, restPaint);
     }
 
     private SKPaint CreateTextPaint(SKColor color, float size, bool bold = false)

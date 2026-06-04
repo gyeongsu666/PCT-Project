@@ -48,6 +48,9 @@ static bool IsImageExtension(string extension) =>
 static bool IsMusicXmlExtension(string extension) =>
     extension is ".xml" or ".musicxml" or ".mxl";
 
+static bool IsMidiExtension(string extension) =>
+    extension is ".mid" or ".midi";
+
 static async Task<string> SaveUploadAsync(IFormFile file, string extension)
 {
     var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}{extension}");
@@ -137,10 +140,24 @@ static (List<MeasureBeat> Beats, double Bpm, double BeatSizeInQN) ParseMusicXml(
 static async Task<(List<MeasureBeat> Beats, double Bpm, double BeatSizeInQN, List<string> TempFiles, byte[]? MusicXmlBytes)> ReadUploadedScoreAsync(IFormFile file)
 {
     var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
-    if (!IsMusicXmlExtension(extension) && extension != ".pdf" && !IsImageExtension(extension))
-        throw new InvalidDataException("지원 형식: PNG, JPG, PDF, XML, MusicXML, MXL");
+    if (!IsMusicXmlExtension(extension) && extension != ".pdf" && !IsImageExtension(extension) && !IsMidiExtension(extension))
+        throw new InvalidDataException("지원 형식: PNG, JPG, PDF, XML, MusicXML, MXL, MIDI");
 
     var tempFiles = new List<string>();
+
+    if (IsMidiExtension(extension))
+    {
+        // MIDI: 음높이만 추출해 박자 격자에 양자화 → TabConverter가 운지 재계산.
+        // 타브 정보가 없으므로 history 재변환용 musicxml은 저장하지 않는다.
+        var ms = new MemoryStream();
+        await using (var midiStream = file.OpenReadStream())
+            await midiStream.CopyToAsync(ms);
+        ms.Position = 0;
+
+        var midiParser = new MidiParser();
+        var midiBeats  = midiParser.Parse(ms);
+        return (midiBeats, midiParser.Bpm, midiParser.BeatSizeInQN, tempFiles, null);
+    }
 
     if (IsMusicXmlExtension(extension))
     {

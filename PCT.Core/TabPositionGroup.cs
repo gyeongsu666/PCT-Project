@@ -11,6 +11,9 @@ public class TabPositionGroup
     public int DroppedCount { get; set; } = 0;
     public NoteGroup SourceGroup { get; set; }
 
+    /// <summary>이 음표 이벤트의 길이 (4분음표 단위). 원본 NoteGroup에서 가져온다.</summary>
+    public double DurationInQN => SourceGroup?.DurationInQN ?? 1.0;
+
     public double HandCenter()
     {
         var nonOpen = Positions.Where(p => p.Fret > 0).ToList();
