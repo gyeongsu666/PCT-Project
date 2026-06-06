@@ -70,6 +70,40 @@ static string ConvertPdfFirstPageToPng(string pdfPath)
     return pngPath;
 }
 
+// 저해상도 이미지를 OMR 전에 업스케일한다. Audiveris는 ~300DPI(오선 간격이 충분)가 필요해
+// 작은 이미지는 오선조차 인식 못 하므로, 긴 변이 기준 미만이면 키운다.
+// (없는 디테일을 만들진 못하지만 '결과 없음'보다 낫고, 깔끔한 이미지는 거의 손실 없음)
+static string UpscaleIfSmall(string imagePath, List<string> tempFiles)
+{
+    const uint minLongSide    = 2000;   // 긴 변이 이보다 작으면 업스케일
+    const uint targetLongSide = 2400;
+
+    try
+    {
+        using var image = new MagickImage(imagePath);
+        uint longSide = Math.Max(image.Width, image.Height);
+        if (longSide >= minLongSide)
+            return imagePath;   // 이미 충분히 큼 → 그대로
+
+        double scale = (double)targetLongSide / longSide;
+        image.FilterType = FilterType.Lanczos;
+        image.Resize((uint)Math.Round(image.Width * scale), (uint)Math.Round(image.Height * scale));
+        image.Format = MagickFormat.Png;
+
+        var upPath = Path.Combine(
+            Path.GetDirectoryName(imagePath) ?? Path.GetTempPath(),
+            Path.GetFileNameWithoutExtension(imagePath) + "_up.png");
+        image.Write(upPath);
+        tempFiles.Add(upPath);
+        return upPath;
+    }
+    catch
+    {
+        // 업스케일 실패는 치명적이지 않다 — 원본 경로로 진행 (Audiveris가 판단)
+        return imagePath;
+    }
+}
+
 // === Result cache ============================================================
 // Same source bytes -> same musicxml. Saves us from re-running OMR(Audiveris)
 // when the user just tweaks the slider and re-converts the same PNG.
@@ -223,6 +257,9 @@ static async Task<(List<MeasureBeat> Beats, double Bpm, double BeatSizeInQN, Lis
         imagePath = ConvertPdfFirstPageToPng(inputPath);
         tempFiles.Add(imagePath);
     }
+
+    // 저해상도 이미지는 OMR 전에 업스케일 (Audiveris가 오선을 인식하도록)
+    imagePath = UpscaleIfSmall(imagePath, tempFiles);
 
     // Audiveris가 .musicxml을 쓸 알려진 경로를 정한다.
     var workingDir = Path.GetDirectoryName(imagePath) ?? Path.GetTempPath();
