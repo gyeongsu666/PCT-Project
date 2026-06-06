@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Text.RegularExpressions;
 using System.Xml;
 
 /// <summary>
@@ -32,16 +33,19 @@ public sealed class AudiverisRunner
 
             try
             {
-                await RunBatchAsync(exe, imagePath, outDir);
+                var (exitCode, errTail, friendly) = await RunBatchAsync(exe, imagePath, outDir);
 
                 // 산출된 .mxl 찾기 (이미지 이름 기반, 없으면 폴더 내 첫 .mxl)
                 var baseName = Path.GetFileNameWithoutExtension(imagePath);
                 var mxl = Path.Combine(outDir, baseName + ".mxl");
                 if (!File.Exists(mxl))
                     mxl = Directory.EnumerateFiles(outDir, "*.mxl", SearchOption.AllDirectories).FirstOrDefault();
+
+                // Audiveris는 경미한 인식 오류에도 non-zero exit을 낼 수 있다.
+                // .mxl이 생성됐으면 exit 코드와 무관하게 사용하고, 없을 때만 실패 처리한다.
                 if (mxl is null || !File.Exists(mxl))
                     throw new InvalidOperationException(
-                        "Audiveris가 MusicXML(.mxl)을 생성하지 못했습니다. (악보 인식 실패 가능)");
+                        friendly ?? $"Audiveris가 악보를 인식하지 못했습니다 (exit {exitCode}). {errTail}".Trim());
 
                 // .mxl(zip)에서 내부 MusicXML 추출 → outputMusicXmlPath에 기록
                 var xmlBytes = ExtractMusicXmlFromMxl(mxl);
@@ -61,7 +65,7 @@ public sealed class AudiverisRunner
         }
     }
 
-    private static async Task RunBatchAsync(string exe, string imagePath, string outDir)
+    private static async Task<(int exitCode, string errTail, string? friendlyReason)> RunBatchAsync(string exe, string imagePath, string outDir)
     {
         var psi = new ProcessStartInfo
         {
@@ -90,15 +94,32 @@ public sealed class AudiverisRunner
                 $"환경변수 PCT_AUDIVERIS에 Audiveris.exe 절대 경로를 지정하세요. ({ex.Message})");
         }
 
-        // 로그를 콘솔로 흘려보냄 (개발 중 진행상황 가시성)
-        _ = Task.Run(async () =>
+        // stderr/stdout을 콘솔로 흘려보내며, stderr는 진단용으로 모아둔다.
+        var errLines = new List<string>();
+        var errTask = Task.Run(async () =>
         {
-            try { string? l; while ((l = await proc.StandardError.ReadLineAsync()) != null) Console.Error.WriteLine("[audiveris] " + l); }
+            try
+            {
+                string? l;
+                while ((l = await proc.StandardError.ReadLineAsync()) != null)
+                {
+                    Console.Error.WriteLine("[audiveris] " + l);
+                    lock (errLines) { errLines.Add(l); }
+                }
+            }
             catch { /* 프로세스 종료 */ }
         });
-        _ = Task.Run(async () =>
+        var outTask = Task.Run(async () =>
         {
-            try { string? l; while ((l = await proc.StandardOutput.ReadLineAsync()) != null) Console.WriteLine("[audiveris] " + l); }
+            try
+            {
+                string? l;
+                while ((l = await proc.StandardOutput.ReadLineAsync()) != null)
+                {
+                    Console.WriteLine("[audiveris] " + l);
+                    lock (errLines) { errLines.Add(l); }
+                }
+            }
             catch { /* 프로세스 종료 */ }
         });
 
@@ -113,8 +134,37 @@ public sealed class AudiverisRunner
             throw new InvalidOperationException("Audiveris 변환 시간이 초과되었습니다 (5분).");
         }
 
-        if (proc.ExitCode != 0)
-            throw new InvalidOperationException($"Audiveris가 비정상 종료했습니다 (exit {proc.ExitCode}).");
+        await Task.WhenAll(errTask, outTask);   // 출력 수집 완료 보장
+
+        // 진단용 요약 + 흔한 실패 원인(저해상도) 친절 메시지 생성
+        string errTail;
+        string? friendly = null;
+        lock (errLines)
+        {
+            var joined = string.Join("\n", errLines);
+
+            // 저해상도: Audiveris가 오선 간격(interline)이 너무 작아 악보를 인식 못 한 경우
+            if (joined.Contains("interline") || joined.Contains("resolution is too low") ||
+                joined.Contains("flagged as invalid"))
+            {
+                var dim   = Regex.Match(joined, @"(\d{2,5})x(\d{2,5})");
+                var inter = Regex.Match(joined, @"interline value of (\d+) pixels");
+                var detail = "";
+                if (dim.Success)   detail += $" 현재 {dim.Groups[1].Value}×{dim.Groups[2].Value}px";
+                if (inter.Success) detail += $", 오선 간격 {inter.Groups[1].Value}px(너무 작음)";
+                friendly =
+                    "이미지 해상도가 너무 낮아 악보(오선)를 인식하지 못했습니다. " +
+                    "300 DPI 이상으로 스캔하거나 더 큰 이미지를 사용하세요 " +
+                    "(악보 한 페이지 기준 약 2480×3508px, 최소 긴 변 2000px 이상 권장)." + detail;
+            }
+
+            var notable = errLines.Where(l =>
+                l.Contains("ERROR") || l.Contains("Exception") ||
+                l.Contains("Could not") || l.Contains("Exit forced")).ToList();
+            var pick = notable.Count > 0 ? notable : errLines;
+            errTail = string.Join(" | ", pick.Skip(Math.Max(0, pick.Count - 3)));
+        }
+        return (proc.ExitCode, errTail, friendly);
     }
 
     /// <summary>.mxl(zip)에서 실제 MusicXML 파트를 추출. META-INF/container.xml의 rootfile을 우선 사용.</summary>
