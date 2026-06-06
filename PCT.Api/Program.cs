@@ -72,14 +72,30 @@ static string ConvertPdfFirstPageToPng(string pdfPath)
 }
 
 // === Result cache ============================================================
-// Same source bytes -> same musicxml. Saves us from re-running oemer when the
-// user just tweaks the slider and re-converts the same PNG.
+// Same source bytes -> same musicxml. Saves us from re-running OMR(Audiveris)
+// when the user just tweaks the slider and re-converts the same PNG.
 
 static string CacheDirectory()
 {
-    var dir = Path.Combine(Path.GetTempPath(), "pct_oemer_cache");
+    // 엔진별 캐시 분리: oemer 시절 캐시(pct_oemer_cache)를 버리고 Audiveris 전용 폴더 사용.
+    // (해시가 같아도 엔진이 다르면 결과가 달라, stale 캐시를 재사용하면 안 됨)
+    var dir = Path.Combine(Path.GetTempPath(), "pct_audiveris_cache");
     Directory.CreateDirectory(dir);
     return dir;
+}
+
+// 결과 캐시 전체 비우기. 변환 기록을 지울 때 함께 호출해, 같은 이미지를 다시 올리면
+// 캐시된 옛 결과 대신 새로 변환되도록 한다.
+static void ClearResultCache()
+{
+    try
+    {
+        foreach (var f in Directory.EnumerateFiles(CacheDirectory(), "*.musicxml"))
+        {
+            try { File.Delete(f); } catch { /* 개별 삭제 실패는 무시 */ }
+        }
+    }
+    catch { /* best-effort */ }
 }
 
 static async Task<string> ComputeSha256HexAsync(string filePath)
@@ -506,6 +522,7 @@ app.MapDelete("/api/history", async () =>
     }
     finally { historyWriteLock.Release(); }
 
+    ClearResultCache();   // 기록을 비우면 결과 캐시도 함께 비운다
     return Results.Ok();
 });
 
