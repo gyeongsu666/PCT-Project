@@ -309,6 +309,48 @@ static List<TabMeasureBeat> ApplyTranspose(List<TabMeasureBeat> beats, int steps
     }).ToList();
 }
 
+// 옥타브 자동 보정: 변환된 프렛이 비정상적으로 높으면(예: 기타 treble-8 음자리표를
+// Audiveris가 한 옥타브 높게 읽은 경우) 음을 한 옥타브 내려 다시 변환한다.
+// 정상 악보(피아노·MIDI 등, 평균 프렛 낮음)는 건드리지 않으며, 내렸을 때
+// 오히려 연주불가가 크게 늘면 원복한다 (근거가 있을 때만 보정).
+static List<TabMeasureBeat> ConvertWithOctaveFix(List<MeasureBeat> beats, TabConverterSettings settings)
+{
+    var converter = new TabConverter(settings);
+    var tab = converter.Convert(beats);
+
+    static double AvgFret(List<TabMeasureBeat> t)
+    {
+        var frets = t.SelectMany(b => b.Notes).SelectMany(g => g.Positions)
+                     .Where(p => !p.IsUnplayable).Select(p => (double)p.Fret).ToList();
+        return frets.Count == 0 ? 0 : frets.Average();
+    }
+    static int Lost(List<TabMeasureBeat> t) =>
+        t.Sum(b => b.Notes.Sum(g => g.DroppedCount + g.Positions.Count(p => p.IsUnplayable)));
+
+    if (AvgFret(tab) > 7.0)   // 프렛이 비정상적으로 높을 때만 시도
+    {
+        foreach (var mb in beats)
+            foreach (var ng in mb.Notes)
+                foreach (var n in ng.Notes)
+                    if (!n.IsRest) n.Octave -= 1;
+
+        var tab2 = converter.Convert(beats);
+        int totalNotes = beats.Sum(b => b.Notes.Count(ng => !ng.IsRest));
+        int allowExtraLoss = Math.Max(2, totalNotes / 20);
+
+        // 충분히 낮아지고 손실이 크게 늘지 않으면 보정본 채택
+        if (AvgFret(tab2) + 1.5 < AvgFret(tab) && Lost(tab2) <= Lost(tab) + allowExtraLoss)
+            return tab2;
+
+        // 아니면 원복
+        foreach (var mb in beats)
+            foreach (var ng in mb.Notes)
+                foreach (var n in ng.Notes)
+                    if (!n.IsRest) n.Octave += 1;
+    }
+    return tab;
+}
+
 static object BuildConvertResult(string title, List<MeasureBeat> inputBeats, double bpm, double beatSizeInQN, TabConverterSettings settings, List<TabMeasureBeat> tabBeats)
 {
     int noteCount    = inputBeats.Sum(b => b.Notes.Sum(ng => ng.Notes.Count));
@@ -375,8 +417,7 @@ app.MapPost("/api/convert", async (HttpRequest request) =>
         tempFiles = parsed.TempFiles;
 
         var settings = ReadSettings(form);
-        var converter = new TabConverter(settings);
-        var tabBeats = converter.Convert(parsed.Beats);
+        var tabBeats = ConvertWithOctaveFix(parsed.Beats, settings);
 
         var result = BuildConvertResult(Path.GetFileNameWithoutExtension(file.FileName), parsed.Beats, parsed.Bpm, parsed.BeatSizeInQN, settings, tabBeats);
 
@@ -456,8 +497,7 @@ app.MapPost("/api/render-png", async (HttpRequest request) =>
         tempFiles = parsed.TempFiles;
 
         var settings = ReadSettings(form);
-        var converter = new TabConverter(settings);
-        var tabBeats = converter.Convert(parsed.Beats);
+        var tabBeats = ConvertWithOctaveFix(parsed.Beats, settings);
         var transposeSteps = int.TryParse(form["transposeSteps"], out var ts) ? ts : 0;
         var transposedBeats = ApplyTranspose(tabBeats, transposeSteps);
         var renderer = new TabImageRenderer();
@@ -594,8 +634,7 @@ app.MapPost("/api/history/{id}/reconvert", async (long id, HttpRequest request) 
         var xmlBytes = await File.ReadAllBytesAsync(musicXmlPath);
         var reconvertParser = new MusicXmlParser();
         var beats = reconvertParser.Parse(new MemoryStream(xmlBytes));
-        var converter = new TabConverter(settings);
-        var tabBeats = converter.Convert(beats);
+        var tabBeats = ConvertWithOctaveFix(beats, settings);
         var finalTitle = title ?? id.ToString();
         var result = BuildConvertResult(finalTitle, beats, reconvertParser.Bpm, reconvertParser.BeatSizeInQN, settings, tabBeats);
 
