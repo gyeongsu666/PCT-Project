@@ -37,3 +37,6 @@ PCT.Api/history-meta.json
 
 # 임시 스크립트
 fix_oemer_patch.ps1
+
+# OMR 테스트 작업 폴더 (Audiveris 추출본·MSI 등, 커밋 금지)
+_omrtest/

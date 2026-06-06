@@ -10,9 +10,4 @@
   <ItemGroup>
     <PackageReference Include="Magick.NET-Q16-AnyCPU" Version="14.13.0" />
   </ItemGroup>
-  <ItemGroup>
-    <None Update="oemer_sidecar.py">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
 </Project>
