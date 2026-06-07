@@ -342,8 +342,33 @@
     font-family: Consolas, monospace;
     font-weight: 700;
     box-shadow: 0 1px 3px rgba(0,0,0,.35);
+    cursor: default;
+    user-select: none;
   }
   .fret.open { background: var(--open); }
+  /* 편집 모드일 때만 hover 강조 */
+  .score.edit-mode .fret { cursor: pointer; }
+  .score.edit-mode .fret:hover { background: var(--accent-2); }
+  .score.edit-mode .fret.open:hover { background: #255c33; }
+  /* 편집 모드 테두리 */
+  .score.edit-mode { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .fret-input {
+    width: 36px;
+    padding: 2px 4px;
+    border-radius: 5px;
+    border: 1.5px solid var(--accent);
+    background: #1a2535;
+    color: var(--text);
+    text-align: center;
+    font-family: Consolas, monospace;
+    font-weight: 700;
+    font-size: 13px;
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(63,140,255,.35);
+  }
+  .fret-input::-webkit-outer-spin-button,
+  .fret-input::-webkit-inner-spin-button { -webkit-appearance: none; }
+  .fret-input[type=number] { -moz-appearance: textfield; }
   .system-index { margin-top: 5px; padding-left: 32px; color: var(--faint); font-size: 11px; }
 
   .preview-img {
@@ -380,6 +405,7 @@
     <input id="fileInput" type="file" accept=".png,image/png,.jpg,.jpeg,image/jpeg,.pdf,.xml,.musicxml,.mxl">
     <div class="file-name" id="fileName">선택된 파일 없음</div>
     <button class="btn" id="playBtn" disabled>▶ 재생</button>
+    <button class="btn" id="editBtn" disabled>수정</button>
     <button class="btn primary" id="downloadBtn" disabled>타브 PNG 저장</button>
     <button class="btn" id="consoleBtn" disabled>텍스트 타브</button>
   </header>
@@ -474,10 +500,15 @@
 
 <script>
 const STRING_NAMES = ['e', 'B', 'G', 'D', 'A', 'E'];
+// 각 줄의 개방현 MIDI 번호 (표준 튜닝: e4=64, B3=59, G3=55, D3=50, A2=45, E2=40)
+const STRING_MIDI  = [64, 59, 55, 50, 45, 40];
 let currentFile = null;
 let currentResult = null;
 let tabPngUrl = null;
 let transposeSteps = 0;
+let editMode  = false;
+let didDrag   = false;   // 드래그 완료 직후 click 이벤트 무시용
+let pendingDrag = null;  // 드래그 상태
 
 // 기록 상태
 let historyItems = [];
@@ -503,6 +534,7 @@ $('reconvertBtn').addEventListener('click', () => {
 });
 $('downloadBtn').addEventListener('click', downloadPng);
 $('consoleBtn').addEventListener('click', showTextTab);
+$('editBtn').addEventListener('click', toggleEditMode);
 
 /* ── 키 조정 ─────────────────────────────────────────────── */
 function updateKeyDisplay() {
@@ -574,6 +606,7 @@ function selectFile(file) {
   $('consoleBtn').disabled = true;
   $('reconvertBtn').disabled = true;
   $('playBtn').disabled = true;
+  $('editBtn').disabled = true;
   $('keyUpBtn').disabled = true;
   $('keyDownBtn').disabled = true;
   showSourcePreview(file);
@@ -615,6 +648,7 @@ async function convertFile() {
     $('consoleBtn').disabled = false;
     $('reconvertBtn').disabled = false;
     $('playBtn').disabled = false;
+    $('editBtn').disabled = false;
     $('keyUpBtn').disabled = false;
     $('keyDownBtn').disabled = false;
     setStatus('변환 완료', 'ok');
@@ -654,6 +688,7 @@ async function reconvertFromHistory() {
     $('downloadBtn').disabled = false;
     $('consoleBtn').disabled = false;
     $('playBtn').disabled = false;
+    $('editBtn').disabled = false;
     setStatus('재변환 완료', 'ok');
     await loadHistory();
     if ($('pngView').classList.contains('active')) await loadPngPreview();
@@ -677,13 +712,14 @@ function beatsToFlat(beats) {
   beats.forEach((beat, beatIdx) => {
     const isNewMeasure = beat.measureNumber !== prevMeasure;
     prevMeasure = beat.measureNumber;
-    (beat.notes ?? []).forEach((note, i) => {
+    (beat.notes ?? []).forEach((note, noteIdx) => {
       flat.push({
         note,
         beatNumber:     beat.beatNumber,
-        beatIdx,                          // 재생 커서용 박 인덱스
-        isBeatStart:    i === 0,
-        isMeasureStart: isNewMeasure && i === 0,
+        beatIdx,
+        noteIdx,
+        isBeatStart:    noteIdx === 0,
+        isMeasureStart: isNewMeasure && noteIdx === 0,
       });
     });
   });
@@ -773,6 +809,12 @@ function renderScore(data) {
             const fret = document.createElement('div');
             fret.className = 'fret' + (fretNum === 0 ? ' open' : '');
             fret.textContent = fretNum;
+            fret.dataset.beatIdx   = item.beatIdx;
+            fret.dataset.noteIdx   = item.noteIdx;
+            fret.dataset.stringIdx = s;
+            fret.dataset.rawFret   = pos.fret;
+            fret.addEventListener('mousedown', e => initNoteDrag(e, fret));
+            fret.addEventListener('click',     () => startFretEdit(fret));
             cell.appendChild(fret);
           }
         }
@@ -794,6 +836,213 @@ function renderScore(data) {
   showLoading(false);
   $('dropZone').style.display = 'none';
   area.style.display = 'block';
+}
+
+/* ── 편집 모드 토글 ──────────────────────────────────────── */
+function toggleEditMode() {
+  if (!editMode) {
+    editMode = true;
+    $('editBtn').textContent = '저장';
+    $('editBtn').classList.add('primary');
+    $('scoreArea').classList.add('edit-mode');
+  } else {
+    saveEditedPng();
+  }
+}
+
+function exitEditMode() {
+  editMode = false;
+  $('editBtn').textContent = '수정';
+  $('editBtn').classList.remove('primary');
+  $('scoreArea').classList.remove('edit-mode');
+}
+
+async function saveEditedPng() {
+  if (!currentResult?.beats) { exitEditMode(); return; }
+
+  exitEditMode();
+  setStatus('PNG 생성 중', '');
+
+  try {
+    const res = await fetch('/api/render-tab-beats-png', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: currentResult.title || 'tab', beats: currentResult.beats })
+    });
+    if (!res.ok) throw new Error(await res.text());
+
+    const blob = await res.blob();
+    if (tabPngUrl) URL.revokeObjectURL(tabPngUrl);
+    tabPngUrl = URL.createObjectURL(blob);
+
+    // PNG 탭 미리보기 업데이트
+    $('tabPreview').src = tabPngUrl;
+    $('tabPreview').style.display = 'block';
+    $('pngEmpty').style.display = 'none';
+    $('pngLoading').style.display = 'none';
+
+    setStatus('PNG 업데이트 완료', 'ok');
+  } catch (err) {
+    setStatus('PNG 생성 실패', 'bad');
+  }
+}
+
+/* ── 줄 드래그 (string 이동) ─────────────────────────────── */
+const DRAG_THRESHOLD = 6; // px — 이 이상 움직여야 드래그로 판정
+
+function initNoteDrag(e, fretEl) {
+  if (!editMode || e.button !== 0) return;
+
+  pendingDrag = {
+    fretEl,
+    startX:    e.clientX,
+    startY:    e.clientY,
+    beatIdx:   parseInt(fretEl.dataset.beatIdx),
+    noteIdx:   parseInt(fretEl.dataset.noteIdx),
+    stringIdx: parseInt(fretEl.dataset.stringIdx),
+    rawFret:   parseInt(fretEl.dataset.rawFret),
+    dragging:  false,
+    ghost:     null,
+    targetStringIdx: parseInt(fretEl.dataset.stringIdx),
+  };
+
+  document.addEventListener('mousemove', onDragMove);
+  document.addEventListener('mouseup',   onDragUp);
+}
+
+function onDragMove(e) {
+  if (!pendingDrag) return;
+
+  const dx = e.clientX - pendingDrag.startX;
+  const dy = e.clientY - pendingDrag.startY;
+
+  // 임계값 초과 시 드래그 시작
+  if (!pendingDrag.dragging && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+    pendingDrag.dragging = true;
+
+    pendingDrag.midiNum    = STRING_MIDI[pendingDrag.stringIdx] + pendingDrag.rawFret;
+    pendingDrag.stringRows = pendingDrag.fretEl.closest('.string-rows');
+
+    const ghost = document.createElement('div');
+    ghost.className = 'fret';
+    ghost.style.cssText = 'position:fixed;pointer-events:none;opacity:0.85;z-index:9999;min-width:24px;padding:2px 5px;';
+    ghost.textContent = pendingDrag.rawFret + transposeSteps;
+    document.body.appendChild(ghost);
+    pendingDrag.ghost = ghost;
+  }
+
+  if (!pendingDrag.dragging) return;
+
+  // Ghost 위치
+  const g = pendingDrag.ghost;
+  g.style.left = (e.clientX - 18) + 'px';
+  g.style.top  = (e.clientY - 14) + 'px';
+
+  // 점유된 줄 목록 (현재 음 제외)
+  const { beatIdx, noteIdx, stringIdx, midiNum, stringRows } = pendingDrag;
+  const note     = currentResult.beats[beatIdx].notes[noteIdx];
+  const occupied = new Set(note.positions.filter(p => p.stringIndex !== stringIdx).map(p => p.stringIndex));
+
+  // 커서에 가장 가까운 사용 가능한 줄 찾기
+  let best = -1, bestDist = Infinity;
+  Array.from(stringRows.children).forEach((row, i) => {
+    if (occupied.has(i)) return;
+    const rect = row.getBoundingClientRect();
+    const dist = Math.abs(e.clientY - (rect.top + rect.height / 2));
+    if (dist < bestDist) { bestDist = dist; best = i; }
+  });
+
+  if (best === -1) return;
+  const newFret = midiNum - STRING_MIDI[best];
+  const valid   = newFret >= 0 && newFret <= 24;
+
+  pendingDrag.targetStringIdx = valid ? best : pendingDrag.stringIdx;
+  g.textContent    = valid ? (newFret + transposeSteps) : '×';
+  g.style.background = !valid        ? 'var(--bad)'
+                     : (newFret + transposeSteps === 0) ? 'var(--open)'
+                     : 'var(--accent)';
+}
+
+function onDragUp() {
+  document.removeEventListener('mousemove', onDragMove);
+  document.removeEventListener('mouseup',   onDragUp);
+
+  if (!pendingDrag) return;
+
+  if (pendingDrag.dragging) {
+    pendingDrag.ghost?.remove();
+
+    const { beatIdx, noteIdx, stringIdx, midiNum, targetStringIdx } = pendingDrag;
+    pendingDrag = null;
+
+    if (targetStringIdx !== stringIdx) {
+      const newFret = midiNum - STRING_MIDI[targetStringIdx];
+      if (newFret >= 0 && newFret <= 24) {
+        const note = currentResult.beats[beatIdx].notes[noteIdx];
+        if (!note.positions.some(p => p.stringIndex === targetStringIdx)) {
+          const pos = note.positions.find(p => p.stringIndex === stringIdx);
+          if (pos) { pos.stringIndex = targetStringIdx; pos.fret = newFret; }
+          renderScore(currentResult);
+        }
+      }
+    }
+
+    // 드래그 후 click 이벤트 무시
+    didDrag = true;
+    setTimeout(() => { didDrag = false; }, 0);
+  } else {
+    pendingDrag = null;
+  }
+}
+
+/* ── 프렛 인라인 편집 ────────────────────────────────────── */
+function startFretEdit(fretEl) {
+  if (!editMode || didDrag) return;
+  if (fretEl.dataset.editing) return;
+  fretEl.dataset.editing = '1';
+
+  const beatIdx   = parseInt(fretEl.dataset.beatIdx);
+  const noteIdx   = parseInt(fretEl.dataset.noteIdx);
+  const stringIdx = parseInt(fretEl.dataset.stringIdx);
+  const rawFret   = parseInt(fretEl.dataset.rawFret);
+
+  const input = document.createElement('input');
+  input.type      = 'number';
+  input.className = 'fret-input';
+  input.min       = 0;
+  input.max       = 24;
+  input.value     = rawFret;
+
+  const commit = () => {
+    const val = parseInt(input.value);
+    if (!isNaN(val) && val >= 0 && val <= 24) {
+      const note = currentResult.beats[beatIdx]?.notes[noteIdx];
+      const pos  = note?.positions?.find(p => p.stringIndex === stringIdx);
+      if (pos) {
+        pos.fret = val;
+        fretEl.dataset.rawFret = val;
+        const display = val + transposeSteps;
+        fretEl.textContent = display;
+        fretEl.className = 'fret' + (display === 0 ? ' open' : '');
+      }
+    }
+    delete fretEl.dataset.editing;
+    input.replaceWith(fretEl);
+  };
+
+  const cancel = () => {
+    delete fretEl.dataset.editing;
+    input.replaceWith(fretEl);
+  };
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+  });
+  input.addEventListener('blur', commit);
+
+  fretEl.replaceWith(input);
+  input.select();
 }
 
 /* ── 통계 업데이트 ───────────────────────────────────────── */
@@ -973,6 +1222,7 @@ async function loadHistoryItem(id) {
     $('consoleBtn').disabled = false;
     $('reconvertBtn').disabled = false;
     $('playBtn').disabled = false;
+    $('editBtn').disabled = false;
     $('keyUpBtn').disabled = false;
     $('keyDownBtn').disabled = false;
     setStatus('기록에서 불러옴', 'ok');
@@ -1002,8 +1252,10 @@ async function deleteHistoryItem(id) {
       $('downloadBtn').disabled = true;
       $('consoleBtn').disabled = true;
       $('reconvertBtn').disabled = true;
+      $('editBtn').disabled = true;
       $('keyUpBtn').disabled = true;
       $('keyDownBtn').disabled = true;
+      exitEditMode();
       $('fileName').textContent = '선택된 파일 없음';
       setStatus('대기 중', '');
     }

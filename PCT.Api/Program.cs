@@ -517,6 +517,48 @@ app.MapPost("/api/render-png", async (HttpRequest request) =>
     }
 });
 
+// 프론트에서 직접 편집한 beats JSON → PNG 재생성
+app.MapPost("/api/render-tab-beats-png", async (HttpRequest request) =>
+{
+    try
+    {
+        using var sr = new StreamReader(request.Body);
+        var json = await sr.ReadToEndAsync();
+        var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+        var payload = JsonSerializer.Deserialize<RenderBeatsPayload>(json, opts);
+
+        if (payload?.Beats == null || payload.Beats.Count == 0)
+            return Results.BadRequest("beats가 없습니다.");
+
+        var tabBeats = payload.Beats.Select(b => new TabMeasureBeat
+        {
+            MeasureNumber = b.MeasureNumber,
+            BeatNumber    = b.BeatNumber,
+            RepeatStart   = b.RepeatStart,
+            RepeatEnd     = b.RepeatEnd,
+            Notes = (b.Notes ?? []).Select(n => new TabPositionGroup
+            {
+                IsRest       = n.IsRest,
+                DroppedCount = n.DroppedCount,
+                Positions    = (n.Positions ?? []).Select(p => new TabPosition
+                {
+                    StringIndex = p.StringIndex,
+                    Fret        = p.Fret,
+                }).ToList()
+            }).ToList()
+        }).ToList();
+
+        var renderer = new TabImageRenderer();
+        var bytes    = renderer.RenderToPngBytes(tabBeats, payload.Title ?? "tab");
+        var fileName = $"{payload.Title ?? "tab"}-tab.png";
+        return Results.File(bytes, "image/png", fileName);
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(ex.Message);
+    }
+});
+
 app.MapGet("/api/history", async () =>
 {
     if (!File.Exists(historyMetaPath))
@@ -665,3 +707,29 @@ app.Run();
 
 
 public record HistoryMeta(long Id, string FileName, string ConvertedAt, int TransposeSteps, string PngUrl);
+
+// /api/render-tab-beats-png 용 DTO
+public class RenderBeatsPayload
+{
+    public string? Title { get; set; }
+    public List<BeatDto> Beats { get; set; } = [];
+}
+public class BeatDto
+{
+    public int MeasureNumber { get; set; }
+    public int BeatNumber    { get; set; }
+    public bool RepeatStart  { get; set; }
+    public bool RepeatEnd    { get; set; }
+    public List<NoteDto> Notes { get; set; } = [];
+}
+public class NoteDto
+{
+    public bool IsRest       { get; set; }
+    public int  DroppedCount { get; set; }
+    public List<PositionDto> Positions { get; set; } = [];
+}
+public class PositionDto
+{
+    public int StringIndex { get; set; }
+    public int Fret        { get; set; }
+}
