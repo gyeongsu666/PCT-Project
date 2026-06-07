@@ -14,4 +14,9 @@ public class TabMeasureBeat
     public bool RepeatStart { get; set; } = false;
     /// <summary>이 마디가 끝 도돌이표(:‖)를 가지는가.</summary>
     public bool RepeatEnd   { get; set; } = false;
+
+    /// <summary>이 마디에 박자표를 표시해야 하면 분자(>0), 아니면 0.</summary>
+    public int TimeSigNum { get; set; } = 0;
+    /// <summary>박자표 분모.</summary>
+    public int TimeSigDen { get; set; } = 0;
 }

@@ -995,6 +995,15 @@ function onDragUp() {
   }
 }
 
+/* ── 음표 삭제 (편집 모드) ───────────────────────────────── */
+function deleteNotePosition(beatIdx, noteIdx, stringIdx) {
+  const note = currentResult?.beats?.[beatIdx]?.notes?.[noteIdx];
+  if (!note || !note.positions) return;
+  note.positions = note.positions.filter(p => p.stringIndex !== stringIdx);
+  if (note.positions.length === 0) note.isRest = true;  // 음이 다 빠지면 쉼표 처리
+  renderScore(currentResult);   // 편집 뷰 즉시 갱신 (저장 시 PNG에도 반영)
+}
+
 /* ── 프렛 인라인 편집 ────────────────────────────────────── */
 function startFretEdit(fretEl) {
   if (!editMode || didDrag) return;
@@ -1036,6 +1045,13 @@ function startFretEdit(fretEl) {
   };
 
   input.addEventListener('keydown', e => {
+    // 빈 칸에서 Backspace/Delete → 이 음표 삭제
+    if ((e.key === 'Delete' || e.key === 'Backspace') && input.value === '') {
+      e.preventDefault();
+      input.removeEventListener('blur', commit);   // 재렌더 시 blur→commit 방지
+      deleteNotePosition(beatIdx, noteIdx, stringIdx);
+      return;
+    }
     if (e.key === 'Enter')  { e.preventDefault(); commit(); }
     if (e.key === 'Escape') { e.preventDefault(); cancel(); }
   });

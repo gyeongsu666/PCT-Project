@@ -295,6 +295,8 @@ static List<TabMeasureBeat> ApplyTranspose(List<TabMeasureBeat> beats, int steps
         BeatNumber    = b.BeatNumber,
         RepeatStart   = b.RepeatStart,
         RepeatEnd     = b.RepeatEnd,
+        TimeSigNum    = b.TimeSigNum,
+        TimeSigDen    = b.TimeSigDen,
         Notes = b.Notes.Select(g => new TabPositionGroup
         {
             IsRest       = g.IsRest,

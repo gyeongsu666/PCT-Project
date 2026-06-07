@@ -27,7 +27,9 @@ public class TabImageRenderer
         bool IsBeatStart,    // 박의 첫 번째 음표인가
         bool IsMeasureStart, // 마디의 첫 번째 음표인가
         bool RepeatStart,    // 이 음표의 마디가 시작 도돌이표(‖:)를 가짐
-        bool RepeatEnd       // 이 음표의 마디가 끝 도돌이표(:‖)를 가짐
+        bool RepeatEnd,      // 이 음표의 마디가 끝 도돌이표(:‖)를 가짐
+        int  TimeSigNum,     // 이 마디에 표시할 박자표 분자(>0이면 표시)
+        int  TimeSigDen
     );
 
     // ── 공개 API ──────────────────────────────────────────────────────────────
@@ -86,7 +88,9 @@ public class TabImageRenderer
                     IsBeatStart:    i == 0,
                     IsMeasureStart: isNewMeasure && i == 0,
                     RepeatStart:    beat.RepeatStart,
-                    RepeatEnd:      beat.RepeatEnd
+                    RepeatEnd:      beat.RepeatEnd,
+                    TimeSigNum:     beat.TimeSigNum,
+                    TimeSigDen:     beat.TimeSigDen
                 ));
                 isNewMeasure = false;
             }
@@ -155,6 +159,8 @@ public class TabImageRenderer
         {
             Color = SKColors.Black, IsAntialias = true, Style = SKPaintStyle.Fill
         };
+        using var timeSigPaint = CreateTextPaint(new SKColor(40, 40, 40), 13, bold: true);
+        timeSigPaint.TextAlign = SKTextAlign.Center;
 
         int   noteCount    = endNote - startNote;
         float systemStartX = MarginLeft + StringLabelWidth;
@@ -215,6 +221,13 @@ public class TabImageRenderer
                 {
                     canvas.DrawLine(barX, barTop, barX, barBottom, measureBarPaint);
                 }
+            }
+
+            // 박자표: 박자가 바뀌는(또는 곡 첫) 마디 시작에 분자/분모를 세로로 표시
+            if (rn.IsMeasureStart && rn.TimeSigNum > 0)
+            {
+                float tsX = (i > startNote) ? x - NoteSpacing / 2f + 7f : systemStartX + 9f;
+                DrawTimeSig(canvas, tsX, stringAreaY, rn.TimeSigNum, rn.TimeSigDen, timeSigPaint);
             }
 
             // 박 번호: 박의 첫 번째 음표 위
@@ -331,6 +344,16 @@ public class TabImageRenderer
         float center = stringAreaY + 2.5f * StringSpacing;
         canvas.DrawCircle(x, center - StringSpacing, 2.2f, dotPaint);
         canvas.DrawCircle(x, center + StringSpacing, 2.2f, dotPaint);
+    }
+
+    // 박자표: 분자(위)·분모(아래)를 스태프에 세로로 그린다.
+    private void DrawTimeSig(SKCanvas canvas, float x, float stringAreaY, int num, int den, SKPaint paint)
+    {
+        var fm = paint.FontMetrics;
+        float upperY = stringAreaY + 1.5f * StringSpacing - (fm.Ascent + fm.Descent) / 2;
+        float lowerY = stringAreaY + 3.5f * StringSpacing - (fm.Ascent + fm.Descent) / 2;
+        canvas.DrawText(num.ToString(), x, upperY, paint);
+        canvas.DrawText(den.ToString(), x, lowerY, paint);
     }
 
     private SKPaint CreateTextPaint(SKColor color, float size, bool bold = false)

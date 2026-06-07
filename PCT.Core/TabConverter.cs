@@ -103,6 +103,8 @@ public class TabConverter
                 BeatNumber    = beat.BeatNumber,
                 RepeatStart   = beat.RepeatStart,
                 RepeatEnd     = beat.RepeatEnd,
+                TimeSigNum    = beat.TimeSigNum,
+                TimeSigDen    = beat.TimeSigDen,
             };
             for (int i = 0; i < beat.Notes.Count; i++, idx++)
             {

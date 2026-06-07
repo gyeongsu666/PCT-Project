@@ -48,6 +48,7 @@ public class MusicXmlParser
 
         var repeatStartMeasures = new HashSet<int>();  // ‖: 가 있는 마디 번호
         var repeatEndMeasures   = new HashSet<int>();  // :‖ 가 있는 마디 번호
+        var timeSigAtMeasure    = new Dictionary<int, (int num, int den)>();  // <time>이 나온 마디 → 박자표
 
         // 누산기가 마디 길이를 넘었으면 그만큼 다음 마디로 넘긴다 (지연 마디 분할).
         // 음표 배치 '직전'에 호출하므로, <backup>이 먼저 누산기를 되감으면 분할은 일어나지
@@ -133,6 +134,7 @@ public class MusicXmlParser
                     }
                     if (beatsNum > 0) beatsPerMeasure = beatsNum;
                     measureLengthQN = beatsPerMeasure * beatSizeInQN;  // 한 마디 길이(4분음표 단위)
+                    timeSigAtMeasure[measureNumber] = (beatsPerMeasure, beatType);  // 박자표 표시용
                     break;
                 }
 
@@ -275,11 +277,16 @@ public class MusicXmlParser
             }
         }
 
-        // 도돌이표 플래그를 마디 번호 기준으로 각 MeasureBeat에 표시
+        // 도돌이표·박자표를 마디 번호 기준으로 각 MeasureBeat에 표시
         foreach (var mb in beats)
         {
             if (repeatStartMeasures.Contains(mb.MeasureNumber)) mb.RepeatStart = true;
             if (repeatEndMeasures.Contains(mb.MeasureNumber))   mb.RepeatEnd   = true;
+            if (timeSigAtMeasure.TryGetValue(mb.MeasureNumber, out var ts))
+            {
+                mb.TimeSigNum = ts.num;
+                mb.TimeSigDen = ts.den;
+            }
         }
 
         // 파싱 완료 후 인스턴스 프로퍼티에 저장
