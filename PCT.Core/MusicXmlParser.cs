@@ -46,6 +46,9 @@ public class MusicXmlParser
         int    beatsPerMeasure = 4;    // 박자표 분자 (4/4 → 4, 6/8 → 6)
         double measureLengthQN = 4.0;  // 한 마디 길이 (4분음표 단위) = 분자 × beatSizeInQN
 
+        var repeatStartMeasures = new HashSet<int>();  // ‖: 가 있는 마디 번호
+        var repeatEndMeasures   = new HashSet<int>();  // :‖ 가 있는 마디 번호
+
         // 누산기가 마디 길이를 넘었으면 그만큼 다음 마디로 넘긴다 (지연 마디 분할).
         // 음표 배치 '직전'에 호출하므로, <backup>이 먼저 누산기를 되감으면 분할은 일어나지
         // 않는다 → 다성부(backup으로 voice 2를 같은 마디에 겹쳐 쓰는 경우)가 보존된다.
@@ -72,6 +75,21 @@ public class MusicXmlParser
                     qnAccumulator    = 0;
                     currentNoteGroup = null;
                     break;
+
+                // ── 도돌이표: <barline><repeat direction="forward|backward"/></barline> ──
+                // forward(location=left) = 시작 도돌이(‖:), backward(location=right) = 끝 도돌이(:‖)
+                case "barline":
+                {
+                    using var blReader = reader.ReadSubtree();
+                    while (blReader.Read())
+                    {
+                        if (blReader.NodeType != XmlNodeType.Element || blReader.LocalName != "repeat") continue;
+                        var dir = blReader.GetAttribute("direction");
+                        if (dir == "forward")       repeatStartMeasures.Add(measureNumber);
+                        else if (dir == "backward") repeatEndMeasures.Add(measureNumber);
+                    }
+                    break;
+                }
 
                 // ── divisions ─────────────────────────────────────────────────
                 case "divisions":
@@ -255,6 +273,13 @@ public class MusicXmlParser
                     break;
                 }
             }
+        }
+
+        // 도돌이표 플래그를 마디 번호 기준으로 각 MeasureBeat에 표시
+        foreach (var mb in beats)
+        {
+            if (repeatStartMeasures.Contains(mb.MeasureNumber)) mb.RepeatStart = true;
+            if (repeatEndMeasures.Contains(mb.MeasureNumber))   mb.RepeatEnd   = true;
         }
 
         // 파싱 완료 후 인스턴스 프로퍼티에 저장

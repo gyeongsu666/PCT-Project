@@ -25,7 +25,9 @@ public class TabImageRenderer
         TabPositionGroup Group,
         int  BeatNumber,
         bool IsBeatStart,    // 박의 첫 번째 음표인가
-        bool IsMeasureStart  // 마디의 첫 번째 음표인가
+        bool IsMeasureStart, // 마디의 첫 번째 음표인가
+        bool RepeatStart,    // 이 음표의 마디가 시작 도돌이표(‖:)를 가짐
+        bool RepeatEnd       // 이 음표의 마디가 끝 도돌이표(:‖)를 가짐
     );
 
     // ── 공개 API ──────────────────────────────────────────────────────────────
@@ -82,7 +84,9 @@ public class TabImageRenderer
                     Group:          beat.Notes[i],
                     BeatNumber:     beat.BeatNumber,
                     IsBeatStart:    i == 0,
-                    IsMeasureStart: isNewMeasure && i == 0
+                    IsMeasureStart: isNewMeasure && i == 0,
+                    RepeatStart:    beat.RepeatStart,
+                    RepeatEnd:      beat.RepeatEnd
                 ));
                 isNewMeasure = false;
             }
@@ -147,6 +151,10 @@ public class TabImageRenderer
         {
             Color = new SKColor(120, 120, 120), IsAntialias = true, Style = SKPaintStyle.Fill
         };
+        using var dotPaint = new SKPaint   // 도돌이표 점
+        {
+            Color = SKColors.Black, IsAntialias = true, Style = SKPaintStyle.Fill
+        };
 
         int   noteCount    = endNote - startNote;
         float systemStartX = MarginLeft + StringLabelWidth;
@@ -170,6 +178,16 @@ public class TabImageRenderer
         canvas.DrawLine(systemStartX, barTop, systemStartX, barBottom, barPaint);
         canvas.DrawLine(systemEndX,   barTop, systemEndX,   barBottom, barPaint);
 
+        // 도돌이표: 시스템 첫 마디가 시작 도돌이(‖:) / 끝 마디가 끝 도돌이(:‖)
+        if (noteCount > 0)
+        {
+            if (notes[startNote].RepeatStart && notes[startNote].IsMeasureStart)
+                DrawRepeatDots(canvas, systemStartX + 6f, stringAreaY, dotPaint);
+            if (notes[endNote - 1].RepeatEnd &&
+                (endNote >= notes.Count || notes[endNote].IsMeasureStart))
+                DrawRepeatDots(canvas, systemEndX - 6f, stringAreaY, dotPaint);
+        }
+
         // ── 박 번호 Y 기준 ─────────────────────────────────────────────────────
         var bm = beatPaint.FontMetrics;
         float beatTextY = systemY + BeatRowHeight / 2f - (bm.Ascent + bm.Descent) / 2f;
@@ -184,8 +202,19 @@ public class TabImageRenderer
             // 마디선: 시스템 첫 음표 아닌 새 마디에만
             if (rn.IsMeasureStart && i > startNote)
             {
-                float barX = x - NoteSpacing / 2f;
-                canvas.DrawLine(barX, barTop, barX, barBottom, measureBarPaint);
+                float barX     = x - NoteSpacing / 2f;
+                bool  repEnd   = notes[i - 1].RepeatEnd;   // 이전 마디가 끝 도돌이(:‖)
+                bool  repStart = rn.RepeatStart;           // 이 마디가 시작 도돌이(‖:)
+                if (repEnd || repStart)
+                {
+                    canvas.DrawLine(barX, barTop, barX, barBottom, barPaint);   // 굵은 마디선
+                    if (repEnd)   DrawRepeatDots(canvas, barX - 6f, stringAreaY, dotPaint);
+                    if (repStart) DrawRepeatDots(canvas, barX + 6f, stringAreaY, dotPaint);
+                }
+                else
+                {
+                    canvas.DrawLine(barX, barTop, barX, barBottom, measureBarPaint);
+                }
             }
 
             // 박 번호: 박의 첫 번째 음표 위
@@ -294,6 +323,14 @@ public class TabImageRenderer
         float midY = stringAreaY + 2.5f * StringSpacing;
         var   rect = new SKRect(x - 3.5f, midY - 5f, x + 3.5f, midY + 5f);
         canvas.DrawRect(rect, restPaint);
+    }
+
+    // 도돌이표의 점 2개 (스태프 중앙 위·아래). x는 마디선에서 좌/우로 오프셋된 위치.
+    private void DrawRepeatDots(SKCanvas canvas, float x, float stringAreaY, SKPaint dotPaint)
+    {
+        float center = stringAreaY + 2.5f * StringSpacing;
+        canvas.DrawCircle(x, center - StringSpacing, 2.2f, dotPaint);
+        canvas.DrawCircle(x, center + StringSpacing, 2.2f, dotPaint);
     }
 
     private SKPaint CreateTextPaint(SKColor color, float size, bool bold = false)

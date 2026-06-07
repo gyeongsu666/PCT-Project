@@ -9,4 +9,9 @@ public class TabMeasureBeat
     public int MeasureNumber { get; set; } = 1;
     public int BeatNumber    { get; set; } = 1;
     public List<TabPositionGroup> Notes { get; set; } = new();
+
+    /// <summary>이 마디가 시작 도돌이표(‖:)를 가지는가.</summary>
+    public bool RepeatStart { get; set; } = false;
+    /// <summary>이 마디가 끝 도돌이표(:‖)를 가지는가.</summary>
+    public bool RepeatEnd   { get; set; } = false;
 }
