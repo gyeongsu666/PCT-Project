@@ -29,7 +29,8 @@ public class TabImageRenderer
         bool RepeatStart,    // 이 음표의 마디가 시작 도돌이표(‖:)를 가짐
         bool RepeatEnd,      // 이 음표의 마디가 끝 도돌이표(:‖)를 가짐
         int  TimeSigNum,     // 이 마디에 표시할 박자표 분자(>0이면 표시)
-        int  TimeSigDen
+        int  TimeSigDen,
+        bool IsPad = false   // 마디 폭 맞추기용 패딩 슬롯 (실제 음표 없음)
     );
 
     // ── 공개 API ──────────────────────────────────────────────────────────────
@@ -104,7 +105,7 @@ public class TabImageRenderer
         var padNote = new TabPositionGroup { IsRest = true };
         void Pad(int n) {
             for (int i = 0; i < n; i++)
-                result.Add(new RenderNote(padNote, 0, false, false, false, false, 0, 0));
+                result.Add(new RenderNote(padNote, 0, false, false, false, false, 0, 0, IsPad: true));
         }
 
         for (int mIdx = 0; mIdx < measureMeta.Count; mIdx++)
@@ -193,10 +194,6 @@ public class TabImageRenderer
             Color = new SKColor(70, 70, 70), IsAntialias = true,
             StrokeWidth = 1.2f, Style = SKPaintStyle.Stroke
         };
-        using var restPaint = new SKPaint
-        {
-            Color = new SKColor(120, 120, 120), IsAntialias = true, Style = SKPaintStyle.Fill
-        };
         using var dotPaint = new SKPaint   // 도돌이표 점
         {
             Color = SKColors.Black, IsAntialias = true, Style = SKPaintStyle.Fill
@@ -206,8 +203,30 @@ public class TabImageRenderer
 
         int   noteCount    = endNote - startNote;
         float systemStartX = MarginLeft + StringLabelWidth;
-        float systemEndX   = systemStartX + SystemPadding * 2 + noteCount * NoteSpacing;
+        // 모든 시스템이 동일한 너비 → 줄선이 항상 한 줄로 연결됨
+        float systemEndX   = CanvasWidth - MarginLeft;
+        float contentWidth = systemEndX - systemStartX - SystemPadding * 2f;
         float stringAreaY  = systemY + BeatRowHeight;
+
+        // 패딩 슬롯은 실제 슬롯의 20% 너비로 축소
+        const float PadFraction = 0.2f;
+        int padCount    = 0;
+        for (int k = startNote; k < endNote; k++)
+            if (notes[k].IsPad) padCount++;
+        float totalUnits = (noteCount - padCount) + padCount * PadFraction;
+        float unitWidth  = totalUnits > 0 ? contentWidth / totalUnits : NoteSpacing;
+        float padWidth   = unitWidth * PadFraction;
+
+        // 각 슬롯의 중심 x 와 왼쪽 경계 x 미리 계산
+        var xCenter = new float[noteCount];
+        var xLeft   = new float[noteCount];
+        float cx = systemStartX + SystemPadding;
+        for (int k = 0; k < noteCount; k++) {
+            float w = notes[startNote + k].IsPad ? padWidth : unitWidth;
+            xLeft[k]   = cx;
+            xCenter[k] = cx + w / 2f;
+            cx += w;
+        }
 
         // ── 기타 줄 ───────────────────────────────────────────────────────────
         for (int s = 0; s < 6; s++)
@@ -245,17 +264,17 @@ public class TabImageRenderer
         {
             var   rn       = notes[i];
             int   localIdx = i - startNote;
-            float x        = systemStartX + SystemPadding + localIdx * NoteSpacing + NoteSpacing / 2f;
+            float x        = xCenter[localIdx];
 
-            // 마디선: 시스템 첫 음표 아닌 새 마디에만
+            // 마디선: 시스템 첫 음표 아닌 새 마디에만 (패딩 슬롯도 마디선은 그림)
             if (rn.IsMeasureStart && i > startNote)
             {
-                float barX     = x - NoteSpacing / 2f;
-                bool  repEnd   = notes[i - 1].RepeatEnd;   // 이전 마디가 끝 도돌이(:‖)
-                bool  repStart = rn.RepeatStart;           // 이 마디가 시작 도돌이(‖:)
+                float barX     = xLeft[localIdx];          // 슬롯 왼쪽 경계 = 마디선 위치
+                bool  repEnd   = notes[i - 1].RepeatEnd;
+                bool  repStart = rn.RepeatStart;
                 if (repEnd || repStart)
                 {
-                    canvas.DrawLine(barX, barTop, barX, barBottom, barPaint);   // 굵은 마디선
+                    canvas.DrawLine(barX, barTop, barX, barBottom, barPaint);
                     if (repEnd)   DrawRepeatDots(canvas, barX - 6f, stringAreaY, dotPaint);
                     if (repStart) DrawRepeatDots(canvas, barX + 6f, stringAreaY, dotPaint);
                 }
@@ -265,10 +284,13 @@ public class TabImageRenderer
                 }
             }
 
+            // 패딩 슬롯은 마디선만 처리하고 나머지는 건너뜀 (회색 네모·리듬·프렛 없음)
+            if (rn.IsPad) continue;
+
             // 박자표: 박자가 바뀌는(또는 곡 첫) 마디 시작에 분자/분모를 세로로 표시
             if (rn.IsMeasureStart && rn.TimeSigNum > 0)
             {
-                float tsX = (i > startNote) ? x - NoteSpacing / 2f + 7f : systemStartX + 9f;
+                float tsX = (i > startNote) ? xLeft[localIdx] + 7f : systemStartX + 9f;
                 DrawTimeSig(canvas, tsX, stringAreaY, rn.TimeSigNum, rn.TimeSigDen, timeSigPaint);
             }
 
@@ -276,16 +298,11 @@ public class TabImageRenderer
             if (rn.IsBeatStart)
                 canvas.DrawText(rn.BeatNumber.ToString(), x, beatTextY, beatPaint);
 
-            // 리듬 표기 (음표·쉼표 공통): 스태프 아래 기둥/꼬리
+            // 리듬 표기: 스태프 아래 기둥/꼬리 (쉼표 포함, 회색 네모는 더 이상 그리지 않음)
             DrawRhythm(canvas, x, barBottom + RhythmGap, rn.Group.DurationInQN,
                        rhythmStemPaint, rhythmFillPaint, rhythmOpenPaint);
 
-            // 쉼표: 스태프 중앙에 기호
-            if (rn.Group.IsRest)
-            {
-                DrawRest(canvas, x, stringAreaY, restPaint);
-                continue;
-            }
+            if (rn.Group.IsRest) continue;
 
             // 프렛 번호
             foreach (var pos in rn.Group.Positions)
@@ -370,14 +387,6 @@ public class TabImageRenderer
         // 점음표
         if (dotted)
             canvas.DrawCircle(x + headR + 4f, topY, 1.4f, fillPaint);
-    }
-
-    // 쉼표 표식 (스태프 중앙). 길이는 리듬 레인의 꼬리로 구분.
-    private void DrawRest(SKCanvas canvas, float x, float stringAreaY, SKPaint restPaint)
-    {
-        float midY = stringAreaY + 2.5f * StringSpacing;
-        var   rect = new SKRect(x - 3.5f, midY - 5f, x + 3.5f, midY + 5f);
-        canvas.DrawRect(rect, restPaint);
     }
 
     // 도돌이표의 점 2개 (스태프 중앙 위·아래). x는 마디선에서 좌/우로 오프셋된 위치.

@@ -307,6 +307,12 @@
   .cell.bar-start {
     border-left: 1.5px solid #737a86;
   }
+  /* 패딩(빈) 슬롯: 같은 item 인덱스에 있는 beat-cell/cell 모두에 적용 → 정렬 유지 */
+  .beat-cell.rest-cell,
+  .cell.rest-cell {
+    flex: 0.25;
+    min-width: 5px;
+  }
 
   /* ── 줄(string) 영역 ────────────────────────────────────── */
   .string-rows { display: grid; grid-template-rows: repeat(6, 28px); }
@@ -741,7 +747,7 @@ function beatsToFlat(beats) {
   const pad = n => {
     for (let i = 0; i < n; i++)
       flat.push({ note: { isRest: true, positions: [] }, beatNumber: 0,
-                  beatIdx: -1, noteIdx: -1, isBeatStart: false, isMeasureStart: false });
+                  beatIdx: -1, noteIdx: -1, isBeatStart: false, isMeasureStart: false, isPad: true });
   };
 
   measures.forEach((m, mIdx) => {
@@ -821,7 +827,7 @@ function renderScore(data) {
     slice.forEach((item, idx) => {
       const cell = document.createElement('div');
       const isBarStart = item.isMeasureStart && idx > 0;
-      cell.className = 'beat-cell' + (isBarStart ? ' bar-start' : '');
+      cell.className = 'beat-cell' + (isBarStart ? ' bar-start' : '') + (item.isPad ? ' rest-cell' : '');
       if (item.isBeatStart) {
         cell.textContent = item.beatNumber;
         if (item.beatIdx != null) cell.dataset.beatIdx = item.beatIdx;
@@ -848,7 +854,7 @@ function renderScore(data) {
         const note = item.note;
         const isBarStart = item.isMeasureStart && idx > 0;
         const cell = document.createElement('div');
-        cell.className = 'cell' + (isBarStart ? ' bar-start' : '');
+        cell.className = 'cell' + (isBarStart ? ' bar-start' : '') + (item.isPad ? ' rest-cell' : '');
 
         // 새 형식: note.positions / 구 형식: note.positions (동일 필드명)
         const pos = (note.positions ?? []).find(p => p.stringIndex === s);
