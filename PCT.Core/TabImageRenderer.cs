@@ -18,7 +18,7 @@ public class TabImageRenderer
     private const float StringLineWidth = 1.2f;
     private const float BarLineWidth    = 1.8f;
     private const int   RhythmGap       = 7;     // 스태프 아래 리듬 표기까지 여백
-    private const float StemLength      = 14f;   // 리듬 기둥 길이
+    private const float StemLength      = 22f;   // 리듬 기둥 길이
 
     // 렌더링을 위해 flat하게 펼친 음표 단위
     private record RenderNote(
@@ -201,7 +201,7 @@ public class TabImageRenderer
         {
             Color = SKColors.Black, IsAntialias = true, Style = SKPaintStyle.Fill
         };
-        using var timeSigPaint = CreateTextPaint(new SKColor(40, 40, 40), 13, bold: true);
+        using var timeSigPaint = CreateTextPaint(new SKColor(40, 40, 40), 20, bold: true);
         timeSigPaint.TextAlign = SKTextAlign.Center;
 
         int   noteCount    = endNote - startNote;
@@ -348,7 +348,7 @@ public class TabImageRenderer
                             SKPaint stemPaint, SKPaint fillPaint, SKPaint openPaint)
     {
         var (flags, dotted, hollow, stem) = ClassifyDuration(durationInQN);
-        const float headR = 2.6f;
+        const float headR = 3.2f;
 
         // 머리: 2분·온음표는 빈 원, 그 외는 채운 원
         if (hollow) canvas.DrawCircle(x, topY, headR, openPaint);
@@ -362,14 +362,14 @@ public class TabImageRenderer
             // 꼬리: 8분음표=1, 16분음표=2 ...
             for (int f = 0; f < flags; f++)
             {
-                float fy = stemBottom - f * 4f;
-                canvas.DrawLine(x, fy, x + 6f, fy - 4f, stemPaint);
+                float fy = stemBottom - f * 5f;
+                canvas.DrawLine(x, fy, x + 9f, fy - 6f, stemPaint);
             }
         }
 
         // 점음표
         if (dotted)
-            canvas.DrawCircle(x + headR + 4f, topY, 1.4f, fillPaint);
+            canvas.DrawCircle(x + headR + 5f, topY, 1.8f, fillPaint);
     }
 
     // 쉼표 표식 (스태프 중앙). 길이는 리듬 레인의 꼬리로 구분.
@@ -392,8 +392,9 @@ public class TabImageRenderer
     private void DrawTimeSig(SKCanvas canvas, float x, float stringAreaY, int num, int den, SKPaint paint)
     {
         var fm = paint.FontMetrics;
-        float upperY = stringAreaY + 1.5f * StringSpacing - (fm.Ascent + fm.Descent) / 2;
-        float lowerY = stringAreaY + 3.5f * StringSpacing - (fm.Ascent + fm.Descent) / 2;
+        // 6줄 스태프(높이=5×StringSpacing) 기준: 상단 절반 중앙(1.25), 하단 절반 중앙(3.75)
+        float upperY = stringAreaY + 1.25f * StringSpacing - (fm.Ascent + fm.Descent) / 2;
+        float lowerY = stringAreaY + 3.75f * StringSpacing - (fm.Ascent + fm.Descent) / 2;
         canvas.DrawText(num.ToString(), x, upperY, paint);
         canvas.DrawText(den.ToString(), x, lowerY, paint);
     }
