@@ -36,12 +36,12 @@ public class TabImageRenderer
 
     public byte[] RenderToPngBytes(List<TabMeasureBeat> beats, string title)
     {
-        var notes = Flatten(beats);
+        var (notes, measureRanges) = Flatten(beats);
 
-        int count       = Math.Max(1, notes.Count);
-        int numSystems  = (int)Math.Ceiling((double)count / NotesPerSystem);
-        int systemHeight = BeatRowHeight + 5 * StringSpacing;
-        int totalHeight  = MarginTop + numSystems * (systemHeight + SystemSpacing) + MarginBottom;
+        int totalMeasures = measureRanges.Count;
+        int numSystems    = totalMeasures == 0 ? 1 : (int)Math.Ceiling(totalMeasures / 4.0);
+        int systemHeight  = BeatRowHeight + 5 * StringSpacing;
+        int totalHeight   = MarginTop + numSystems * (systemHeight + SystemSpacing) + MarginBottom;
 
         var info = new SKImageInfo(CanvasWidth, totalHeight);
         using var surface = SKSurface.Create(info);
@@ -50,10 +50,12 @@ public class TabImageRenderer
 
         DrawHeader(canvas, title);
 
-        for (int sysIdx = 0; sysIdx < numSystems; sysIdx++)
+        for (int sysIdx = 0; sysIdx < numSystems && totalMeasures > 0; sysIdx++)
         {
-            int startNote = sysIdx * NotesPerSystem;
-            int endNote   = Math.Min(startNote + NotesPerSystem, notes.Count);
+            int firstM    = sysIdx * 4;
+            int lastM     = Math.Min(firstM + 4, totalMeasures) - 1;
+            int startNote = measureRanges[firstM].Start;
+            int endNote   = measureRanges[lastM].Start + measureRanges[lastM].Len;
             float systemY = MarginTop + sysIdx * (systemHeight + SystemSpacing);
             DrawSystem(canvas, notes, startNote, endNote, systemY);
         }
@@ -70,32 +72,72 @@ public class TabImageRenderer
 
     // ── 내부 헬퍼 ─────────────────────────────────────────────────────────────
 
-    private static List<RenderNote> Flatten(List<TabMeasureBeat> beats)
+    private record MeasureRange(int Start, int Len);
+
+    private static (List<RenderNote> Notes, List<MeasureRange> MeasureRanges) Flatten(List<TabMeasureBeat> beats)
     {
-        var result = new List<RenderNote>();
-        int prevMeasure = -1;
+        var result        = new List<RenderNote>();
+        var measureRanges = new List<MeasureRange>();
+        if (beats == null || beats.Count == 0) return (result, measureRanges);
 
-        foreach (var beat in beats)
+        // 마디별 그룹화, timeSigNum carry-forward
+        var measureGroups = beats
+            .GroupBy(b => b.MeasureNumber)
+            .OrderBy(g => g.Key)
+            .ToList();
+
+        int effTimeSig = 4;
+        var measureMeta = new List<(IGrouping<int, TabMeasureBeat> Group, int TimeSig, int ActualNotes)>();
+        foreach (var g in measureGroups)
         {
-            bool isNewMeasure = beat.MeasureNumber != prevMeasure;
-            prevMeasure = beat.MeasureNumber;
-
-            for (int i = 0; i < beat.Notes.Count; i++)
-            {
-                result.Add(new RenderNote(
-                    Group:          beat.Notes[i],
-                    BeatNumber:     beat.BeatNumber,
-                    IsBeatStart:    i == 0,
-                    IsMeasureStart: isNewMeasure && i == 0,
-                    RepeatStart:    beat.RepeatStart,
-                    RepeatEnd:      beat.RepeatEnd,
-                    TimeSigNum:     beat.TimeSigNum,
-                    TimeSigDen:     beat.TimeSigDen
-                ));
-                isNewMeasure = false;
-            }
+            int ts = 0;
+            foreach (var b in g) { if (b.TimeSigNum > 0) { ts = b.TimeSigNum; break; } }
+            if (ts > 0) effTimeSig = ts;
+            measureMeta.Add((g, effTimeSig, g.Sum(b => b.Notes.Count)));
         }
-        return result;
+
+        // maxNotesPerBeat: (실제음표수 / timeSig) 의 최댓값
+        int maxNotesPerBeat = 1;
+        foreach (var (_, ts, actual) in measureMeta)
+            maxNotesPerBeat = Math.Max(maxNotesPerBeat, (int)Math.Ceiling((double)actual / ts));
+
+        var padNote = new TabPositionGroup { IsRest = true };
+        void Pad(int n) {
+            for (int i = 0; i < n; i++)
+                result.Add(new RenderNote(padNote, 0, false, false, false, false, 0, 0));
+        }
+
+        for (int mIdx = 0; mIdx < measureMeta.Count; mIdx++)
+        {
+            var (group, timeSig, _) = measureMeta[mIdx];
+            int slots    = maxNotesPerBeat * timeSig;
+            int startIdx = result.Count;
+            int count    = 0;
+            bool newMeasure = true;
+
+            foreach (var beat in group)
+            {
+                for (int i = 0; i < beat.Notes.Count; i++)
+                {
+                    result.Add(new RenderNote(
+                        Group:          beat.Notes[i],
+                        BeatNumber:     beat.BeatNumber,
+                        IsBeatStart:    i == 0,
+                        IsMeasureStart: newMeasure && i == 0 && mIdx > 0,
+                        RepeatStart:    beat.RepeatStart,
+                        RepeatEnd:      beat.RepeatEnd,
+                        TimeSigNum:     beat.TimeSigNum,
+                        TimeSigDen:     beat.TimeSigDen
+                    ));
+                    if (i == 0) newMeasure = false;
+                    count++;
+                }
+            }
+            Pad(slots - count);
+            measureRanges.Add(new MeasureRange(startIdx, slots));
+        }
+
+        return (result, measureRanges);
     }
 
     private void DrawHeader(SKCanvas canvas, string title)

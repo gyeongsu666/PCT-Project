@@ -375,6 +375,10 @@ static object BuildConvertResult(string title, List<MeasureBeat> inputBeats, dou
         {
             measureNumber = b.MeasureNumber,
             beatNumber    = b.BeatNumber,
+            repeatStart   = b.RepeatStart,
+            repeatEnd     = b.RepeatEnd,
+            timeSigNum    = b.TimeSigNum,
+            timeSigDen    = b.TimeSigDen,
             notes = b.Notes.Select(g => new
             {
                 isRest       = g.IsRest,
@@ -538,6 +542,8 @@ app.MapPost("/api/render-tab-beats-png", async (HttpRequest request) =>
             BeatNumber    = b.BeatNumber,
             RepeatStart   = b.RepeatStart,
             RepeatEnd     = b.RepeatEnd,
+            TimeSigNum    = b.TimeSigNum,
+            TimeSigDen    = b.TimeSigDen,
             Notes = (b.Notes ?? []).Select(n => new TabPositionGroup
             {
                 IsRest       = n.IsRest,
@@ -722,6 +728,8 @@ public class BeatDto
     public int BeatNumber    { get; set; }
     public bool RepeatStart  { get; set; }
     public bool RepeatEnd    { get; set; }
+    public int TimeSigNum    { get; set; }
+    public int TimeSigDen    { get; set; }
     public List<NoteDto> Notes { get; set; } = [];
 }
 public class NoteDto

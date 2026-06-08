@@ -291,8 +291,8 @@
     border-right: 1.5px solid #737a86;
   }
   .beat-cell {
-    width: 36px;
-    flex: 0 0 36px;
+    flex: 1;
+    min-width: 28px;
     height: 18px;
     display: flex;
     align-items: center;
@@ -325,9 +325,9 @@
   .cell {
     position: relative;
     z-index: 1;
-    width: 36px;
+    flex: 1;
+    min-width: 28px;
     height: 28px;
-    flex: 0 0 36px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -707,23 +707,54 @@ async function reconvertFromHistory() {
  * 구 형식(groups 배열)도 처리할 수 있도록 legacyGroupsToFlat() 를 제공한다.
  */
 function beatsToFlat(beats) {
-  const flat = [];
-  let prevMeasure = -1;
+  if (!beats || beats.length === 0) return { flat: [], measureBoundaries: [] };
+
+  // 마디별 그룹화 (순서 유지)
+  const measureMap = new Map();
   beats.forEach((beat, beatIdx) => {
-    const isNewMeasure = beat.measureNumber !== prevMeasure;
-    prevMeasure = beat.measureNumber;
+    const mn = beat.measureNumber;
+    if (!measureMap.has(mn)) measureMap.set(mn, { timeSigNum: 0, notes: [] });
+    const m = measureMap.get(mn);
+    if ((beat.timeSigNum ?? 0) > 0) m.timeSigNum = beat.timeSigNum;
     (beat.notes ?? []).forEach((note, noteIdx) => {
-      flat.push({
-        note,
-        beatNumber:     beat.beatNumber,
-        beatIdx,
-        noteIdx,
-        isBeatStart:    noteIdx === 0,
-        isMeasureStart: isNewMeasure && noteIdx === 0,
-      });
+      m.notes.push({ note, beatNumber: beat.beatNumber, beatIdx, noteIdx, isBeatStart: noteIdx === 0 });
     });
   });
-  return flat;
+
+  const measures = [...measureMap.values()];
+
+  // timeSigNum carry-forward (0이면 이전 마디 박자 유지, 기본 4)
+  let eff = 4;
+  measures.forEach(m => {
+    if (m.timeSigNum > 0) eff = m.timeSigNum;
+    else m.timeSigNum = eff;
+  });
+
+  // maxNotesPerBeat: (마디 음표 수 / timeSigNum) 의 최댓값
+  const maxNotesPerBeat = Math.max(1, ...measures.map(m =>
+    Math.ceil((m.notes.length || 1) / m.timeSigNum)
+  ));
+
+  const flat = [];
+  const measureBoundaries = [];
+
+  const pad = n => {
+    for (let i = 0; i < n; i++)
+      flat.push({ note: { isRest: true, positions: [] }, beatNumber: 0,
+                  beatIdx: -1, noteIdx: -1, isBeatStart: false, isMeasureStart: false });
+  };
+
+  measures.forEach((m, mIdx) => {
+    const slots = maxNotesPerBeat * m.timeSigNum;
+    const start = flat.length;
+    m.notes.forEach((item, i) => {
+      flat.push({ ...item, isMeasureStart: i === 0 && mIdx > 0 });
+    });
+    pad(slots - m.notes.length);
+    measureBoundaries.push({ start, len: slots, timeSigNum: m.timeSigNum });
+  });
+
+  return { flat, measureBoundaries };
 }
 
 /** 구 형식 data.groups → flat 변환 (기존 기록 호환용) */
@@ -741,21 +772,39 @@ function renderScore(data) {
   stopPlayback();   // 악보가 다시 그려지면 재생 중단
 
   // 새 형식(beats) 우선, 구 형식(groups) 폴백
-  const flat = (data.beats
-    ? beatsToFlat(data.beats)
-    : legacyGroupsToFlat(data.groups ?? [])) ?? [];
+  let flat = [], measureBoundaries = [];
+  if (data.beats) {
+    const r = beatsToFlat(data.beats);
+    flat = r.flat; measureBoundaries = r.measureBoundaries;
+  } else {
+    flat = legacyGroupsToFlat(data.groups ?? []);
+    let ms = 0;
+    flat.forEach((item, i) => {
+      if (item.isMeasureStart && i > 0) { measureBoundaries.push({ start: ms, len: i - ms }); ms = i; }
+    });
+    measureBoundaries.push({ start: ms, len: flat.length - ms });
+  }
 
   const area   = $('scoreArea');
   const cursor = $('cursorLine');   // innerHTML 초기화 전에 참조 저장
   area.innerHTML = '';
   if (cursor) area.appendChild(cursor);  // 지워진 커서 다시 붙이기
-  const perSystem = 24;
-  const systems = Math.max(1, Math.ceil(flat.length / perSystem));
+
+  if (flat.length === 0) {
+    showLoading(false); $('dropZone').style.display = 'none'; area.style.display = 'block'; return;
+  }
+
+  const totalMeasures = measureBoundaries.length || 1;
+  const systems = Math.max(1, Math.ceil(totalMeasures / 4));
 
   for (let sys = 0; sys < systems; sys++) {
-    const start = sys * perSystem;
-    const end   = Math.min(start + perSystem, flat.length);
-    const slice = flat.slice(start, end);
+    const firstMIdx = sys * 4;
+    const lastMIdx  = Math.min(firstMIdx + 4, measureBoundaries.length) - 1;
+    const start = measureBoundaries[firstMIdx]?.start ?? 0;
+    const end   = lastMIdx >= 0
+      ? measureBoundaries[lastMIdx].start + measureBoundaries[lastMIdx].len
+      : flat.length;
+    const slice = flat.slice(start, Math.min(end, flat.length));
     const systemEl = document.createElement('div');
     systemEl.className = 'system';
 
@@ -828,7 +877,7 @@ function renderScore(data) {
     systemEl.appendChild(rows);
     const index = document.createElement('div');
     index.className = 'system-index';
-    index.textContent = `${start + 1} – ${end}`;
+    index.textContent = `마디 ${firstMIdx + 1} – ${lastMIdx + 1}`;
     systemEl.appendChild(index);
     area.appendChild(systemEl);
   }
@@ -997,11 +1046,21 @@ function onDragUp() {
 
 /* ── 음표 삭제 (편집 모드) ───────────────────────────────── */
 function deleteNotePosition(beatIdx, noteIdx, stringIdx) {
-  const note = currentResult?.beats?.[beatIdx]?.notes?.[noteIdx];
+  const beat = currentResult?.beats?.[beatIdx];
+  const note = beat?.notes?.[noteIdx];
   if (!note || !note.positions) return;
   note.positions = note.positions.filter(p => p.stringIndex !== stringIdx);
-  if (note.positions.length === 0) note.isRest = true;  // 음이 다 빠지면 쉼표 처리
-  renderScore(currentResult);   // 편집 뷰 즉시 갱신 (저장 시 PNG에도 반영)
+  if (note.positions.length === 0) note.isRest = true;
+
+  // 해당 마디의 모든 beat에 실제 음이 하나도 없으면 마디 전체 제거
+  const measureNum = beat.measureNumber;
+  const hasAnyNote = currentResult.beats
+    .filter(b => b.measureNumber === measureNum)
+    .some(b => (b.notes ?? []).some(n => !n.isRest && (n.positions ?? []).length > 0));
+  if (!hasAnyNote)
+    currentResult.beats = currentResult.beats.filter(b => b.measureNumber !== measureNum);
+
+  renderScore(currentResult);
 }
 
 /* ── 프렛 인라인 편집 ────────────────────────────────────── */
