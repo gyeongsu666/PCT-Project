@@ -24,3 +24,19 @@ obj/
 # 기타
 .DS_Store
 Thumbs.db
+
+# OCR 히스토리 데이터 (런타임 생성 파일)
+PCT.Api/history-data/
+PCT.Api/wwwroot/history/
+PCT.Api/history-meta.json
+
+# 테스트 이미지
+*.png
+*.jpg
+*.jpeg
+
+# 임시 스크립트
+fix_oemer_patch.ps1
+
+# OMR 테스트 작업 폴더 (Audiveris 추출본·MSI 등, 커밋 금지)
+_omrtest/
