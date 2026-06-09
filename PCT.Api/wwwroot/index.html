@@ -309,35 +309,22 @@
     border-left: 1.5px solid #737a86;
   }
 
-  /* 마디 추가 버튼: 마디선 위에 중앙 정렬, 마디선과 함께 이동 */
-  .bar-add-btn {
-    position: absolute;
-    left: 0;
-    top: 50%;
-    transform: translate(-50%, -50%);
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
+  /* 마디 추가 버튼: 수정 모드에서 각 시스템 아래 표시 */
+  .system-add-btn {
+    display: none;
+    width: 100%;
+    margin-top: 4px;
+    padding: 3px 0;
     background: transparent;
-    border: 1.5px solid #737a86;
-    color: #737a86;
-    font-size: 13px;
-    line-height: 1;
+    border: 1px dashed var(--border);
+    border-radius: 5px;
+    color: var(--faint);
+    font-size: 11px;
     cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 20;
-    padding: 0;
-    opacity: 0;
-    transition: opacity .15s, background .15s, color .15s;
+    transition: border-color .15s, color .15s;
   }
-  .system:hover .bar-add-btn { opacity: 1; }
-  .bar-add-btn:hover {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: white;
-  }
+  .score.edit-mode .system-add-btn { display: block; }
+  .system-add-btn:hover { border-color: var(--accent); color: var(--accent); }
   /* 패딩(빈) 슬롯: 같은 item 인덱스에 있는 beat-cell/cell 모두에 적용 → 정렬 유지 */
   .beat-cell.rest-cell,
   .cell.rest-cell {
@@ -902,26 +889,12 @@ function renderScore(data) {
     const beatTrack = document.createElement('div');
     beatTrack.className = 'beat-track';
 
-    let curMeasureIdx = firstMIdx;  // 전체 measureBoundaries 기준 현재 마디 인덱스
     slice.forEach((item, idx) => {
       const cell = document.createElement('div');
       const isBarStart = item.isMeasureStart && idx > 0;
-      if (isBarStart) curMeasureIdx++;
       cell.className = 'beat-cell' + (isBarStart ? ' bar-start' : '') + (item.isPad ? ' rest-cell' : '');
-
-      // 마디선마다 "+" 버튼 삽입 (left:0 고정 → 마디선과 항상 동일 위치)
-      if (isBarStart) {
-        const addBtn = document.createElement('button');
-        addBtn.className = 'bar-add-btn';
-        addBtn.textContent = '+';
-        addBtn.title = '여기에 마디 추가';
-        const capturedIdx = curMeasureIdx;
-        addBtn.addEventListener('click', e => { e.stopPropagation(); addMeasureAt(capturedIdx); });
-        cell.appendChild(addBtn);
-      }
-
       if (item.isBeatStart) {
-        cell.appendChild(document.createTextNode(item.beatNumber));
+        cell.textContent = item.beatNumber;
         if (item.beatIdx != null) cell.dataset.beatIdx = item.beatIdx;
       }
       beatTrack.appendChild(cell);
@@ -1011,6 +984,14 @@ function renderScore(data) {
     index.className = 'system-index';
     index.textContent = `마디 ${firstMIdx + 1} – ${lastMIdx + 1}`;
     systemEl.appendChild(index);
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'system-add-btn';
+    addBtn.textContent = '+ 마디 추가';
+    const capturedLastMIdx = lastMIdx;
+    addBtn.addEventListener('click', () => addMeasureAt(capturedLastMIdx + 1));
+    systemEl.appendChild(addBtn);
+
     area.appendChild(systemEl);
   }
 
