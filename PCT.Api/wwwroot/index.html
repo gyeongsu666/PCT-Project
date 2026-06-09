@@ -291,6 +291,7 @@
     border-right: 1.5px solid #737a86;
   }
   .beat-cell {
+    position: relative;
     flex: 1;
     min-width: 28px;
     height: 18px;
@@ -307,6 +308,7 @@
   .cell.bar-start {
     border-left: 1.5px solid #737a86;
   }
+
   /* 패딩(빈) 슬롯: 같은 item 인덱스에 있는 beat-cell/cell 모두에 적용 → 정렬 유지 */
   .beat-cell.rest-cell,
   .cell.rest-cell {
@@ -384,13 +386,31 @@
   .dur-item.active { color: var(--accent); font-weight: 700; }
   .dur-item.active:hover { color: #fff; }
   /* 마디 추가 + 버튼 */
-  .add-measure-btn {
-    position: absolute; z-index: 5; width: 18px; height: 18px;
-    border-radius: 50%; background: var(--accent); color: #fff; border: none;
-    cursor: pointer; font-weight: 700; font-size: 14px; line-height: 1;
-    display: flex; align-items: center; justify-content: center; padding: 0; opacity: .45;
+  /* 마디 추가 버튼: 수정 모드에서 마디선 위에만 표시 */
+  .bar-add-btn {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: transparent;
+    border: 1.5px solid #737a86;
+    color: #737a86;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+    padding: 0;
+    opacity: 0;
+    transition: opacity .15s, background .15s, color .15s;
   }
-  .add-measure-btn:hover { opacity: 1; transform: scale(1.15); }
+  .score.edit-mode .system:hover .bar-add-btn { opacity: 1; }
+  .bar-add-btn:hover { background: var(--accent); border-color: var(--accent); color: white; }
   .fret-input {
     width: 36px;
     padding: 2px 4px;
@@ -879,6 +899,18 @@ function renderScore(data) {
         cell.textContent = item.beatNumber;
         if (item.beatIdx != null) cell.dataset.beatIdx = item.beatIdx;
       }
+      // 마디선마다 + 버튼 (수정 모드에서 시스템 hover 시 표시)
+      if (isBarStart && item.beatIdx >= 0) {
+        const curMeasureNum = data.beats?.[item.beatIdx]?.measureNumber;
+        if (curMeasureNum != null) {
+          const addBtn = document.createElement('button');
+          addBtn.className = 'bar-add-btn';
+          addBtn.textContent = '+';
+          addBtn.title = '여기에 마디 추가';
+          addBtn.addEventListener('click', e => { e.stopPropagation(); insertMeasureAfter(curMeasureNum - 1); });
+          cell.appendChild(addBtn);
+        }
+      }
       beatTrack.appendChild(cell);
     });
 
@@ -939,28 +971,6 @@ function renderScore(data) {
     }
 
     systemEl.appendChild(rows);
-
-    // 편집 모드: 각 마디 끝에 '+' 버튼 (그 마디 뒤에 빈 마디 삽입)
-    if (editMode) {
-      rows.style.position = 'relative';
-      for (let mi = firstMIdx; mi <= lastMIdx; mi++) {
-        const mb = measureBoundaries[mi];
-        if (!mb) continue;
-        const localEnd   = (mb.start - start) + mb.len;   // 시스템 내 로컬 끝 인덱스
-        const x          = 32 + localEnd * 36;            // 라벨 32px + 셀 36px
-        const firstItem  = flat[mb.start];
-        const measureNum = data.beats?.[firstItem?.beatIdx]?.measureNumber;
-        if (measureNum == null) continue;
-        const btn = document.createElement('button');
-        btn.className   = 'add-measure-btn';
-        btn.textContent = '+';
-        btn.title       = '이 마디 뒤에 빈 마디 추가';
-        btn.style.left  = (x - 9) + 'px';
-        btn.style.top   = 'calc(50% - 9px)';
-        btn.addEventListener('click', ev => { ev.stopPropagation(); insertMeasureAfter(measureNum); });
-        rows.appendChild(btn);
-      }
-    }
 
     const index = document.createElement('div');
     index.className = 'system-index';

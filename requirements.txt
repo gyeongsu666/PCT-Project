@@ -40,7 +40,6 @@ namex==0.1.0
 networkx==3.6.1
 numba==0.65.1
 numpy==2.4.5
-oemer==0.1.8
 onnx==1.21.0
 onnxruntime==1.26.0
 onnxruntime-gpu==1.26.0
