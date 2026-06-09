@@ -383,6 +383,7 @@ static object BuildConvertResult(string title, List<MeasureBeat> inputBeats, dou
             {
                 isRest       = g.IsRest,
                 droppedCount = g.DroppedCount,
+                durationInQN = g.DurationInQN,
                 positions    = g.Positions.Where(p => !p.IsUnplayable)
                     .Select(p => new { stringIndex = p.StringIndex, fret = p.Fret })
                     .ToList()
@@ -548,6 +549,7 @@ app.MapPost("/api/render-tab-beats-png", async (HttpRequest request) =>
             {
                 IsRest       = n.IsRest,
                 DroppedCount = n.DroppedCount,
+                SourceGroup  = new NoteGroup { DurationInQN = n.DurationInQN },   // 빔 기보용 음길이 복원
                 Positions    = (n.Positions ?? []).Select(p => new TabPosition
                 {
                     StringIndex = p.StringIndex,
@@ -736,6 +738,7 @@ public class NoteDto
 {
     public bool IsRest       { get; set; }
     public int  DroppedCount { get; set; }
+    public double DurationInQN { get; set; } = 1.0;   // 빔 기보용 음길이(4분음표=1.0). 구 데이터는 1.0
     public List<PositionDto> Positions { get; set; } = [];
 }
 public class PositionDto

@@ -18,7 +18,9 @@ public class TabImageRenderer
     private const float StringLineWidth = 1.2f;
     private const float BarLineWidth    = 1.8f;
     private const int   RhythmGap       = 7;     // 스태프 아래 리듬 표기까지 여백
-    private const float StemLength      = 14f;   // 리듬 기둥 길이
+    private const float StemLength      = 22f;   // 리듬 기둥 길이
+    private const float BeamThickness   = 3.0f;  // 빔(굵은 가로선) 두께
+    private const float BeamSpacing     = 2.0f;  // 빔 레벨 간 빈 간격
 
     // 렌더링을 위해 flat하게 펼친 음표 단위
     private record RenderNote(
@@ -30,7 +32,8 @@ public class TabImageRenderer
         bool RepeatEnd,      // 이 음표의 마디가 끝 도돌이표(:‖)를 가짐
         int  TimeSigNum,     // 이 마디에 표시할 박자표 분자(>0이면 표시)
         int  TimeSigDen,
-        bool IsPad = false   // 마디 폭 맞추기용 패딩 슬롯 (실제 음표 없음)
+        double MeasureQN,    // 이 음표가 속한 마디의 총 길이(4분음표 단위). 4/4=4, 2/4=2
+        double StartQN       // 마디 안에서 이 음표의 시작 시각(4분음표 단위)
     );
 
     // ── 공개 API ──────────────────────────────────────────────────────────────
@@ -73,7 +76,7 @@ public class TabImageRenderer
 
     // ── 내부 헬퍼 ─────────────────────────────────────────────────────────────
 
-    private record MeasureRange(int Start, int Len);
+    private record MeasureRange(int Start, int Len, double QN);
 
     private static (List<RenderNote> Notes, List<MeasureRange> MeasureRanges) Flatten(List<TabMeasureBeat> beats)
     {
@@ -81,61 +84,50 @@ public class TabImageRenderer
         var measureRanges = new List<MeasureRange>();
         if (beats == null || beats.Count == 0) return (result, measureRanges);
 
-        // 마디별 그룹화, timeSigNum carry-forward
+        // 마디별 그룹화
         var measureGroups = beats
             .GroupBy(b => b.MeasureNumber)
             .OrderBy(g => g.Key)
             .ToList();
 
-        int effTimeSig = 4;
-        var measureMeta = new List<(IGrouping<int, TabMeasureBeat> Group, int TimeSig, int ActualNotes)>();
-        foreach (var g in measureGroups)
+        // 박자표 carry-forward (분자·분모 모두). 마디 총 길이 = num × 4 / den (4분음표 단위)
+        int effNum = 4, effDen = 4;
+
+        for (int mIdx = 0; mIdx < measureGroups.Count; mIdx++)
         {
-            int ts = 0;
-            foreach (var b in g) { if (b.TimeSigNum > 0) { ts = b.TimeSigNum; break; } }
-            if (ts > 0) effTimeSig = ts;
-            measureMeta.Add((g, effTimeSig, g.Sum(b => b.Notes.Count)));
-        }
+            var group = measureGroups[mIdx];
+            foreach (var b in group)
+            {
+                if (b.TimeSigNum > 0) { effNum = b.TimeSigNum; if (b.TimeSigDen > 0) effDen = b.TimeSigDen; break; }
+            }
+            double measureQN = effNum * 4.0 / effDen;
 
-        // maxNotesPerBeat: (실제음표수 / timeSig) 의 최댓값
-        int maxNotesPerBeat = 1;
-        foreach (var (_, ts, actual) in measureMeta)
-            maxNotesPerBeat = Math.Max(maxNotesPerBeat, (int)Math.Ceiling((double)actual / ts));
-
-        var padNote = new TabPositionGroup { IsRest = true };
-        void Pad(int n) {
-            for (int i = 0; i < n; i++)
-                result.Add(new RenderNote(padNote, 0, false, false, false, false, 0, 0, IsPad: true));
-        }
-
-        for (int mIdx = 0; mIdx < measureMeta.Count; mIdx++)
-        {
-            var (group, timeSig, _) = measureMeta[mIdx];
-            int slots    = maxNotesPerBeat * timeSig;
-            int startIdx = result.Count;
-            int count    = 0;
-            bool newMeasure = true;
+            int    startIdx   = result.Count;
+            double startQN    = 0;
+            bool   newMeasure = true;
 
             foreach (var beat in group)
             {
                 for (int i = 0; i < beat.Notes.Count; i++)
                 {
+                    var g = beat.Notes[i];
                     result.Add(new RenderNote(
-                        Group:          beat.Notes[i],
+                        Group:          g,
                         BeatNumber:     beat.BeatNumber,
                         IsBeatStart:    i == 0,
                         IsMeasureStart: newMeasure && i == 0 && mIdx > 0,
                         RepeatStart:    beat.RepeatStart,
                         RepeatEnd:      beat.RepeatEnd,
                         TimeSigNum:     beat.TimeSigNum,
-                        TimeSigDen:     beat.TimeSigDen
+                        TimeSigDen:     beat.TimeSigDen,
+                        MeasureQN:      measureQN,
+                        StartQN:        startQN
                     ));
                     if (i == 0) newMeasure = false;
-                    count++;
+                    startQN += g.DurationInQN;
                 }
             }
-            Pad(slots - count);
-            measureRanges.Add(new MeasureRange(startIdx, slots));
+            measureRanges.Add(new MeasureRange(startIdx, result.Count - startIdx, measureQN));
         }
 
         return (result, measureRanges);
@@ -198,7 +190,7 @@ public class TabImageRenderer
         {
             Color = SKColors.Black, IsAntialias = true, Style = SKPaintStyle.Fill
         };
-        using var timeSigPaint = CreateTextPaint(new SKColor(40, 40, 40), 13, bold: true);
+        using var timeSigPaint = CreateTextPaint(new SKColor(40, 40, 40), 20, bold: true);
         timeSigPaint.TextAlign = SKTextAlign.Center;
 
         int   noteCount    = endNote - startNote;
@@ -208,24 +200,52 @@ public class TabImageRenderer
         float contentWidth = systemEndX - systemStartX - SystemPadding * 2f;
         float stringAreaY  = systemY + BeatRowHeight;
 
-        // 패딩 슬롯은 실제 슬롯의 20% 너비로 축소
-        const float PadFraction = 0.2f;
-        int padCount    = 0;
-        for (int k = startNote; k < endNote; k++)
-            if (notes[k].IsPad) padCount++;
-        float totalUnits = (noteCount - padCount) + padCount * PadFraction;
-        float unitWidth  = totalUnits > 0 ? contentWidth / totalUnits : NoteSpacing;
-        float padWidth   = unitWidth * PadFraction;
+        // ── 마디별 너비(박자 비례) + 음표별 x(박 위치 비례) 계산 ──────────────────
+        // 1) 시스템 내 마디 경계와 각 마디 길이(QN) 수집
+        var measLocalStart = new List<int>();
+        var measLen        = new List<double>();
+        for (int k = 0; k < noteCount; k++)
+        {
+            var rn = notes[startNote + k];
+            if (k == 0 || rn.IsMeasureStart)
+            {
+                measLocalStart.Add(k);
+                measLen.Add(rn.MeasureQN > 0 ? rn.MeasureQN : 4.0);
+            }
+        }
+        int    measCount = measLocalStart.Count;
+        double totalQN   = 0;
+        foreach (var q in measLen) totalQN += q;
+        if (totalQN <= 0) totalQN = 1;
 
-        // 각 슬롯의 중심 x 와 왼쪽 경계 x 미리 계산
+        // 2) 마디별 시작 x·너비 (시스템 너비를 QN 비례로 배분)
+        var measX0 = new float[measCount];
+        var measW  = new float[measCount];
+        float accX = systemStartX + SystemPadding;
+        for (int m = 0; m < measCount; m++)
+        {
+            measW[m]  = (float)(contentWidth * measLen[m] / totalQN);
+            measX0[m] = accX;
+            accX += measW[m];
+        }
+
+        // 3) 각 음표의 중심 x(자기 시간 구간 중앙)·왼쪽 경계 x(마디선·박자표용)
         var xCenter = new float[noteCount];
         var xLeft   = new float[noteCount];
-        float cx = systemStartX + SystemPadding;
-        for (int k = 0; k < noteCount; k++) {
-            float w = notes[startNote + k].IsPad ? padWidth : unitWidth;
-            xLeft[k]   = cx;
-            xCenter[k] = cx + w / 2f;
-            cx += w;
+        for (int m = 0; m < measCount; m++)
+        {
+            int    s   = measLocalStart[m];
+            int    e   = (m + 1 < measCount) ? measLocalStart[m + 1] : noteCount;
+            double mQN = measLen[m];
+            for (int k = s; k < e; k++)
+            {
+                var    rn    = notes[startNote + k];
+                double dur   = rn.Group.DurationInQN;
+                double cFrac = mQN > 0 ? (rn.StartQN + dur / 2.0) / mQN : (k - s + 0.5) / (double)(e - s);
+                double lFrac = mQN > 0 ?  rn.StartQN              / mQN : (k - s)       / (double)(e - s);
+                xCenter[k] = measX0[m] + (float)(Math.Clamp(cFrac, 0, 1) * measW[m]);
+                xLeft[k]   = measX0[m] + (float)(Math.Clamp(lFrac, 0, 1) * measW[m]);
+            }
         }
 
         // ── 기타 줄 ───────────────────────────────────────────────────────────
@@ -284,9 +304,6 @@ public class TabImageRenderer
                 }
             }
 
-            // 패딩 슬롯은 마디선만 처리하고 나머지는 건너뜀 (회색 네모·리듬·프렛 없음)
-            if (rn.IsPad) continue;
-
             // 박자표: 박자가 바뀌는(또는 곡 첫) 마디 시작에 분자/분모를 세로로 표시
             if (rn.IsMeasureStart && rn.TimeSigNum > 0)
             {
@@ -298,10 +315,6 @@ public class TabImageRenderer
             if (rn.IsBeatStart)
                 canvas.DrawText(rn.BeatNumber.ToString(), x, beatTextY, beatPaint);
 
-            // 리듬 표기: 스태프 아래 기둥/꼬리 (쉼표 포함, 회색 네모는 더 이상 그리지 않음)
-            DrawRhythm(canvas, x, barBottom + RhythmGap, rn.Group.DurationInQN,
-                       rhythmStemPaint, rhythmFillPaint, rhythmOpenPaint);
-
             if (rn.Group.IsRest) continue;
 
             // 프렛 번호
@@ -312,6 +325,10 @@ public class TabImageRenderer
                 DrawFretNumber(canvas, pos.Fret.ToString(), x, stringY, fretPaint, whiteBg);
             }
         }
+
+        // ── 리듬 표기: 스태프 아래 기둥/빔 (박 단위 빔 기보) ──────────────────────
+        DrawBeamedRhythm(canvas, notes, startNote, endNote, xCenter, barBottom + RhythmGap,
+                         rhythmStemPaint, rhythmFillPaint, rhythmOpenPaint);
     }
 
     private void DrawFretNumber(SKCanvas canvas, string fretStr, float x, float stringY,
@@ -360,33 +377,146 @@ public class TabImageRenderer
         return (best.flags, best.dotted, best.hollow, best.stem);
     }
 
-    // 스태프 아래에 리듬(기둥·꼬리·점)을 그린다. 프렛 숫자가 음표 머리 역할.
-    private void DrawRhythm(SKCanvas canvas, float x, float topY, double durationInQN,
-                            SKPaint stemPaint, SKPaint fillPaint, SKPaint openPaint)
+    // 리듬 음표 한 개의 표기 정보 (프렛 숫자가 머리 역할, 머리 원은 거의 안 그림)
+    private record struct RhythmItem(float X, int Flags, bool Dotted, bool Hollow, bool Stem,
+                                     bool IsRest, bool BeatStart);
+
+    // 스태프 아래에 리듬을 빔(beam) 기보법으로 그린다.
+    // 박(beat) 단위로 8분음표 이하를 굵은 가로 빔으로 묶고, 4분음표 이상은 단독 기둥.
+    private void DrawBeamedRhythm(SKCanvas canvas, List<RenderNote> notes,
+                                  int startNote, int endNote, float[] xCenter, float topY,
+                                  SKPaint stemPaint, SKPaint fillPaint, SKPaint openPaint)
     {
-        var (flags, dotted, hollow, stem) = ClassifyDuration(durationInQN);
-        const float headR = 2.6f;
-
-        // 머리: 2분·온음표는 빈 원, 그 외는 채운 원
-        if (hollow) canvas.DrawCircle(x, topY, headR, openPaint);
-        else        canvas.DrawCircle(x, topY, headR, fillPaint);
-
-        if (stem)
+        float stemBottom = topY + StemLength;
+        using var beamPaint = new SKPaint
         {
-            float stemBottom = topY + StemLength;
-            canvas.DrawLine(x, topY, x, stemBottom, stemPaint);
+            Color = new SKColor(70, 70, 70), IsAntialias = true, Style = SKPaintStyle.Fill
+        };
 
-            // 꼬리: 8분음표=1, 16분음표=2 ...
-            for (int f = 0; f < flags; f++)
-            {
-                float fy = stemBottom - f * 4f;
-                canvas.DrawLine(x, fy, x + 6f, fy - 4f, stemPaint);
-            }
+        // 실제 음표(패딩 제외) 수집
+        var items = new List<RhythmItem>();
+        for (int i = startNote; i < endNote; i++)
+        {
+            var rn = notes[i];
+            var (flags, dotted, hollow, stem) = ClassifyDuration(rn.Group.DurationInQN);
+            items.Add(new RhythmItem(xCenter[i - startNote], flags, dotted, hollow, stem,
+                                     rn.Group.IsRest, rn.IsBeatStart));
         }
 
-        // 점음표
-        if (dotted)
-            canvas.DrawCircle(x + headR + 4f, topY, 1.4f, fillPaint);
+        int n = items.Count, g = 0;
+        while (g < n)
+        {
+            var it = items[g];
+            // 쉼표 또는 4분음표 이상 → 빔 불가, 단독 표기
+            if (it.IsRest || it.Flags == 0)
+            {
+                DrawSingleStem(canvas, it, topY, stemBottom, stemPaint, fillPaint, openPaint);
+                g++;
+                continue;
+            }
+            // 빔 그룹 확장: 같은 박 안에서 연속된 8분음표 이하(쉼표 아님)
+            int h = g + 1;
+            while (h < n && !items[h].BeatStart && items[h].Flags >= 1 && !items[h].IsRest)
+                h++;
+
+            if (h - g == 1)   // 단독 8분 이하 → 깃발
+                DrawFlaggedStem(canvas, items[g], topY, stemBottom, stemPaint, fillPaint);
+            else              // 2개 이상 → 빔으로 묶음
+                DrawBeamGroup(canvas, items, g, h, topY, stemBottom, stemPaint, fillPaint, beamPaint);
+
+            g = h;
+        }
+    }
+
+    // 빔으로 묶인 그룹: 각 음표 기둥 + primary/secondary 빔
+    private void DrawBeamGroup(SKCanvas canvas, List<RhythmItem> items, int start, int end,
+                               float topY, float stemBottom,
+                               SKPaint stemPaint, SKPaint fillPaint, SKPaint beamPaint)
+    {
+        // 기둥 + 점
+        for (int k = start; k < end; k++)
+        {
+            canvas.DrawLine(items[k].X, topY, items[k].X, stemBottom, stemPaint);
+            if (items[k].Dotted)
+                canvas.DrawCircle(items[k].X + 5f, topY, 1.8f, fillPaint);
+        }
+
+        int maxLevel = 0;
+        for (int k = start; k < end; k++) maxLevel = Math.Max(maxLevel, items[k].Flags);
+
+        // primary 빔(레벨1, 8분): 그룹 전체 연결
+        DrawBeamLine(canvas, items[start].X, items[end - 1].X, stemBottom, beamPaint);
+
+        // secondary 빔(레벨2~, 16분·32분): flags>=level 연속 구간만, 단독은 짧은 부분 빔
+        for (int level = 2; level <= maxLevel; level++)
+        {
+            float yb = stemBottom - (level - 1) * (BeamThickness + BeamSpacing);
+            int k = start;
+            while (k < end)
+            {
+                if (items[k].Flags < level) { k++; continue; }
+                int j = k;
+                while (j + 1 < end && items[j + 1].Flags >= level) j++;
+                if (j > k)
+                    DrawBeamLine(canvas, items[k].X, items[j].X, yb, beamPaint);
+                else
+                {
+                    const float stub = 7f;   // 단독 16분 등 → 부분 빔
+                    if (k > start) DrawBeamLine(canvas, items[k].X - stub, items[k].X, yb, beamPaint);
+                    else           DrawBeamLine(canvas, items[k].X, items[k].X + stub, yb, beamPaint);
+                }
+                k = j + 1;
+            }
+        }
+    }
+
+    // 굵은 가로 빔 (yBottom 기준 위로 두께만큼)
+    private void DrawBeamLine(SKCanvas canvas, float x0, float x1, float yBottom, SKPaint beamPaint)
+        => canvas.DrawRect(new SKRect(x0, yBottom - BeamThickness, x1, yBottom), beamPaint);
+
+    // 단독 8분음표 이하: 기둥 + 깃발(flag)
+    private void DrawFlaggedStem(SKCanvas canvas, RhythmItem it, float topY, float stemBottom,
+                                 SKPaint stemPaint, SKPaint fillPaint)
+    {
+        canvas.DrawLine(it.X, topY, it.X, stemBottom, stemPaint);
+        for (int f = 0; f < it.Flags; f++)
+        {
+            float fy = stemBottom - f * 5f;
+            canvas.DrawLine(it.X, fy, it.X + 9f, fy - 6f, stemPaint);
+        }
+        if (it.Dotted) canvas.DrawCircle(it.X + 5f, topY, 1.8f, fillPaint);
+    }
+
+    // 단독 음표(4분 이상) 또는 쉼표
+    private void DrawSingleStem(SKCanvas canvas, RhythmItem it, float topY, float stemBottom,
+                                SKPaint stemPaint, SKPaint fillPaint, SKPaint openPaint)
+    {
+        if (it.IsRest)
+        {
+            DrawRestSymbol(canvas, it.X, topY, stemBottom, fillPaint);
+            return;
+        }
+        if (!it.Stem)   // 온음표: 빈 원만 (기둥 없음)
+        {
+            canvas.DrawCircle(it.X, topY, 3.2f, openPaint);
+            return;
+        }
+        canvas.DrawLine(it.X, topY, it.X, stemBottom, stemPaint);
+        if (it.Hollow) canvas.DrawCircle(it.X, topY, 3.2f, openPaint);  // 2분음표 빈 원으로 구분
+        if (it.Dotted) canvas.DrawCircle(it.X + 5f, topY, 1.8f, fillPaint);
+    }
+
+    // 쉼표 기호 (리듬 레인 중앙). 사선 + 점으로 간략 표기.
+    private void DrawRestSymbol(SKCanvas canvas, float x, float topY, float stemBottom, SKPaint fillPaint)
+    {
+        float midY = (topY + stemBottom) / 2f;
+        using var p = new SKPaint
+        {
+            Color = fillPaint.Color, IsAntialias = true,
+            StrokeWidth = 2.2f, Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round
+        };
+        canvas.DrawLine(x - 3f, midY + 4f, x + 3f, midY - 4f, p);
+        canvas.DrawCircle(x + 3f, midY - 4f, 1.7f, fillPaint);
     }
 
     // 도돌이표의 점 2개 (스태프 중앙 위·아래). x는 마디선에서 좌/우로 오프셋된 위치.
@@ -401,8 +531,9 @@ public class TabImageRenderer
     private void DrawTimeSig(SKCanvas canvas, float x, float stringAreaY, int num, int den, SKPaint paint)
     {
         var fm = paint.FontMetrics;
-        float upperY = stringAreaY + 1.5f * StringSpacing - (fm.Ascent + fm.Descent) / 2;
-        float lowerY = stringAreaY + 3.5f * StringSpacing - (fm.Ascent + fm.Descent) / 2;
+        // 6줄 스태프(높이=5×StringSpacing) 기준: 상단 절반 중앙(1.25), 하단 절반 중앙(3.75)
+        float upperY = stringAreaY + 1.25f * StringSpacing - (fm.Ascent + fm.Descent) / 2;
+        float lowerY = stringAreaY + 3.75f * StringSpacing - (fm.Ascent + fm.Descent) / 2;
         canvas.DrawText(num.ToString(), x, upperY, paint);
         canvas.DrawText(den.ToString(), x, lowerY, paint);
     }

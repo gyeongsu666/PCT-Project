@@ -356,8 +356,41 @@
   .score.edit-mode .fret { cursor: pointer; }
   .score.edit-mode .fret:hover { background: var(--accent-2); }
   .score.edit-mode .fret.open:hover { background: #255c33; }
+  /* 편집 모드: 빈 셀에 음 추가 가능 표시 (+) */
+  .score.edit-mode .cell.addable { cursor: pointer; }
+  .score.edit-mode .cell.addable:hover::after {
+    content: '+';
+    color: var(--accent);
+    font-weight: 700;
+    font-family: Consolas, monospace;
+    opacity: .8;
+  }
   /* 편집 모드 테두리 */
   .score.edit-mode { outline: 2px solid var(--accent); outline-offset: 4px; }
+  /* 박자 우클릭 메뉴 */
+  .dur-menu {
+    position: fixed; z-index: 10000;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.45); font-size: 12px;
+  }
+  .dur-item {
+    padding: 5px 16px; cursor: pointer; border-radius: 4px;
+    white-space: nowrap; color: var(--text); display: flex; justify-content: space-between; gap: 14px;
+  }
+  .dur-item:hover { background: var(--accent); color: #fff; }
+  .dur-item .dur-sym { color: var(--faint); }
+  .dur-item:hover .dur-sym { color: #fff; }
+  .dur-item.active { color: var(--accent); font-weight: 700; }
+  .dur-item.active:hover { color: #fff; }
+  /* 마디 추가 + 버튼 */
+  .add-measure-btn {
+    position: absolute; z-index: 5; width: 18px; height: 18px;
+    border-radius: 50%; background: var(--accent); color: #fff; border: none;
+    cursor: pointer; font-weight: 700; font-size: 14px; line-height: 1;
+    display: flex; align-items: center; justify-content: center; padding: 0; opacity: .45;
+  }
+  .add-measure-btn:hover { opacity: 1; transform: scale(1.15); }
   .fret-input {
     width: 36px;
     padding: 2px 4px;
@@ -411,6 +444,7 @@
     <input id="fileInput" type="file" accept=".png,image/png,.jpg,.jpeg,image/jpeg,.pdf,.xml,.musicxml,.mxl">
     <div class="file-name" id="fileName">선택된 파일 없음</div>
     <button class="btn" id="playBtn" disabled>▶ 재생</button>
+    <button class="btn" id="undoBtn" style="display:none" disabled title="되돌리기 (Ctrl+Z)">↩ 되돌리기</button>
     <button class="btn" id="editBtn" disabled>수정</button>
     <button class="btn primary" id="downloadBtn" disabled>타브 PNG 저장</button>
     <button class="btn" id="consoleBtn" disabled>텍스트 타브</button>
@@ -515,6 +549,8 @@ let transposeSteps = 0;
 let editMode  = false;
 let didDrag   = false;   // 드래그 완료 직후 click 이벤트 무시용
 let pendingDrag = null;  // 드래그 상태
+let undoStack = [];      // 편집 되돌리기 스택 (beats 스냅샷)
+const UNDO_LIMIT = 50;   // 되돌리기 최대 단계
 
 // 기록 상태
 let historyItems = [];
@@ -541,6 +577,17 @@ $('reconvertBtn').addEventListener('click', () => {
 $('downloadBtn').addEventListener('click', downloadPng);
 $('consoleBtn').addEventListener('click', showTextTab);
 $('editBtn').addEventListener('click', toggleEditMode);
+$('undoBtn').addEventListener('click', undo);
+
+// Ctrl+Z → 되돌리기 (편집 모드에서만)
+document.addEventListener('keydown', e => {
+  if (editMode && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    // 프렛 입력창에 포커스가 있으면 input 자체 undo 우선
+    if (document.activeElement?.classList?.contains('fret-input')) return;
+    e.preventDefault();
+    undo();
+  }
+});
 
 /* ── 키 조정 ─────────────────────────────────────────────── */
 function updateKeyDisplay() {
@@ -858,20 +905,31 @@ function renderScore(data) {
 
         // 새 형식: note.positions / 구 형식: note.positions (동일 필드명)
         const pos = (note.positions ?? []).find(p => p.stringIndex === s);
-        if (!note.isRest && pos) {
-          const fretNum = pos.fret + transposeSteps;
-          if (fretNum >= 0) {
-            const fret = document.createElement('div');
-            fret.className = 'fret' + (fretNum === 0 ? ' open' : '');
-            fret.textContent = fretNum;
-            fret.dataset.beatIdx   = item.beatIdx;
-            fret.dataset.noteIdx   = item.noteIdx;
-            fret.dataset.stringIdx = s;
-            fret.dataset.rawFret   = pos.fret;
-            fret.addEventListener('mousedown', e => initNoteDrag(e, fret));
-            fret.addEventListener('click',     () => startFretEdit(fret));
-            cell.appendChild(fret);
-          }
+        const fretNum = pos ? pos.fret + transposeSteps : -1;
+
+        // 실제 박에 속한 셀이면 좌표 정보 부여 (드래그 타겟·음 추가 공통)
+        if (item.beatIdx >= 0 && !item.isPad) {
+          cell.dataset.beatIdx   = item.beatIdx;
+          cell.dataset.noteIdx   = item.noteIdx;
+          cell.dataset.stringIdx = s;
+        }
+
+        if (!note.isRest && pos && fretNum >= 0) {
+          const fret = document.createElement('div');
+          fret.className = 'fret' + (fretNum === 0 ? ' open' : '');
+          fret.textContent = fretNum;
+          fret.dataset.beatIdx   = item.beatIdx;
+          fret.dataset.noteIdx   = item.noteIdx;
+          fret.dataset.stringIdx = s;
+          fret.dataset.rawFret   = pos.fret;
+          fret.addEventListener('mousedown', e => initNoteDrag(e, fret));
+          fret.addEventListener('click',     () => startFretEdit(fret));
+          fret.addEventListener('contextmenu', e => showDurationMenu(fret, e));
+          cell.appendChild(fret);
+        } else if (item.beatIdx >= 0 && !item.isPad) {
+          // 빈 셀: 편집 모드에서 클릭하면 음 추가
+          cell.classList.add('addable');
+          cell.addEventListener('click', () => startAddNote(cell));
         }
         track.appendChild(cell);
       });
@@ -881,6 +939,29 @@ function renderScore(data) {
     }
 
     systemEl.appendChild(rows);
+
+    // 편집 모드: 각 마디 끝에 '+' 버튼 (그 마디 뒤에 빈 마디 삽입)
+    if (editMode) {
+      rows.style.position = 'relative';
+      for (let mi = firstMIdx; mi <= lastMIdx; mi++) {
+        const mb = measureBoundaries[mi];
+        if (!mb) continue;
+        const localEnd   = (mb.start - start) + mb.len;   // 시스템 내 로컬 끝 인덱스
+        const x          = 32 + localEnd * 36;            // 라벨 32px + 셀 36px
+        const firstItem  = flat[mb.start];
+        const measureNum = data.beats?.[firstItem?.beatIdx]?.measureNumber;
+        if (measureNum == null) continue;
+        const btn = document.createElement('button');
+        btn.className   = 'add-measure-btn';
+        btn.textContent = '+';
+        btn.title       = '이 마디 뒤에 빈 마디 추가';
+        btn.style.left  = (x - 9) + 'px';
+        btn.style.top   = 'calc(50% - 9px)';
+        btn.addEventListener('click', ev => { ev.stopPropagation(); insertMeasureAfter(measureNum); });
+        rows.appendChild(btn);
+      }
+    }
+
     const index = document.createElement('div');
     index.className = 'system-index';
     index.textContent = `마디 ${firstMIdx + 1} – ${lastMIdx + 1}`;
@@ -897,9 +978,12 @@ function renderScore(data) {
 function toggleEditMode() {
   if (!editMode) {
     editMode = true;
+    undoStack = [];                     // 편집 세션 시작 → 되돌리기 스택 초기화
     $('editBtn').textContent = '저장';
     $('editBtn').classList.add('primary');
     $('scoreArea').classList.add('edit-mode');
+    $('undoBtn').style.display = '';
+    updateUndoBtn();
   } else {
     saveEditedPng();
   }
@@ -907,9 +991,31 @@ function toggleEditMode() {
 
 function exitEditMode() {
   editMode = false;
+  undoStack = [];
   $('editBtn').textContent = '수정';
   $('editBtn').classList.remove('primary');
   $('scoreArea').classList.remove('edit-mode');
+  $('undoBtn').style.display = 'none';
+}
+
+/* ── 되돌리기 (Undo) ─────────────────────────────────────── */
+// 변경 직전 호출: 현재 beats 상태를 깊은 복사로 스택에 보관
+function pushUndo() {
+  if (!currentResult?.beats) return;
+  undoStack.push(JSON.parse(JSON.stringify(currentResult.beats)));
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  updateUndoBtn();
+}
+
+function undo() {
+  if (!editMode || undoStack.length === 0) return;
+  currentResult.beats = undoStack.pop();
+  updateUndoBtn();
+  renderScore(currentResult);
+}
+
+function updateUndoBtn() {
+  $('undoBtn').disabled = undoStack.length === 0;
 }
 
 async function saveEditedPng() {
@@ -942,7 +1048,7 @@ async function saveEditedPng() {
   }
 }
 
-/* ── 줄 드래그 (string 이동) ─────────────────────────────── */
+/* ── 음표 드래그 (상하: 줄 이동 / 좌우: 박 이동) ──────────── */
 const DRAG_THRESHOLD = 6; // px — 이 이상 움직여야 드래그로 판정
 
 function initNoteDrag(e, fretEl) {
@@ -958,7 +1064,7 @@ function initNoteDrag(e, fretEl) {
     rawFret:   parseInt(fretEl.dataset.rawFret),
     dragging:  false,
     ghost:     null,
-    targetStringIdx: parseInt(fretEl.dataset.stringIdx),
+    target:    null,   // { tb, tn, ts, newFret } — 유효한 목표 슬롯
   };
 
   document.addEventListener('mousemove', onDragMove);
@@ -974,9 +1080,9 @@ function onDragMove(e) {
   // 임계값 초과 시 드래그 시작
   if (!pendingDrag.dragging && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
     pendingDrag.dragging = true;
-
-    pendingDrag.midiNum    = STRING_MIDI[pendingDrag.stringIdx] + pendingDrag.rawFret;
-    pendingDrag.stringRows = pendingDrag.fretEl.closest('.string-rows');
+    pendingDrag.midiNum  = STRING_MIDI[pendingDrag.stringIdx] + pendingDrag.rawFret;
+    // 드래그 대상 후보 셀(실제 박 셀) 수집
+    pendingDrag.cells = Array.from($('scoreArea').querySelectorAll('.cell[data-beat-idx]'));
 
     const ghost = document.createElement('div');
     ghost.className = 'fret';
@@ -993,29 +1099,31 @@ function onDragMove(e) {
   g.style.left = (e.clientX - 18) + 'px';
   g.style.top  = (e.clientY - 14) + 'px';
 
-  // 점유된 줄 목록 (현재 음 제외)
-  const { beatIdx, noteIdx, stringIdx, midiNum, stringRows } = pendingDrag;
-  const note     = currentResult.beats[beatIdx].notes[noteIdx];
-  const occupied = new Set(note.positions.filter(p => p.stringIndex !== stringIdx).map(p => p.stringIndex));
+  // 커서에 가장 가까운 셀 찾기 (상하좌우 전체)
+  let best = null, bestDist = Infinity;
+  for (const c of pendingDrag.cells) {
+    const r = c.getBoundingClientRect();
+    const d = Math.hypot(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2));
+    if (d < bestDist) { bestDist = d; best = c; }
+  }
+  if (!best) return;
 
-  // 커서에 가장 가까운 사용 가능한 줄 찾기
-  let best = -1, bestDist = Infinity;
-  Array.from(stringRows.children).forEach((row, i) => {
-    if (occupied.has(i)) return;
-    const rect = row.getBoundingClientRect();
-    const dist = Math.abs(e.clientY - (rect.top + rect.height / 2));
-    if (dist < bestDist) { bestDist = dist; best = i; }
-  });
+  const { beatIdx, noteIdx, stringIdx, midiNum } = pendingDrag;
+  const tb = parseInt(best.dataset.beatIdx);
+  const tn = parseInt(best.dataset.noteIdx);
+  const ts = parseInt(best.dataset.stringIdx);
+  const newFret = midiNum - STRING_MIDI[ts];   // 음높이 유지 (같은 줄이면 그대로)
 
-  if (best === -1) return;
-  const newFret = midiNum - STRING_MIDI[best];
-  const valid   = newFret >= 0 && newFret <= 24;
+  const isSelf   = tb === beatIdx && tn === noteIdx && ts === stringIdx;
+  const dstNote  = currentResult.beats[tb]?.notes[tn];
+  const occupied = !!dstNote && dstNote.positions.some(p => p.stringIndex === ts);
+  const valid    = !isSelf && !occupied && newFret >= 0 && newFret <= 24;
 
-  pendingDrag.targetStringIdx = valid ? best : pendingDrag.stringIdx;
-  g.textContent    = valid ? (newFret + transposeSteps) : '×';
-  g.style.background = !valid        ? 'var(--bad)'
-                     : (newFret + transposeSteps === 0) ? 'var(--open)'
-                     : 'var(--accent)';
+  pendingDrag.target = valid ? { tb, tn, ts, newFret } : null;
+  g.textContent      = (newFret >= 0 && newFret <= 24) ? (newFret + transposeSteps) : '×';
+  g.style.background  = !valid                              ? 'var(--bad)'
+                      : (newFret + transposeSteps === 0)    ? 'var(--open)'
+                      :                                       'var(--accent)';
 }
 
 function onDragUp() {
@@ -1027,18 +1135,25 @@ function onDragUp() {
   if (pendingDrag.dragging) {
     pendingDrag.ghost?.remove();
 
-    const { beatIdx, noteIdx, stringIdx, midiNum, targetStringIdx } = pendingDrag;
+    const { beatIdx, noteIdx, stringIdx, target } = pendingDrag;
     pendingDrag = null;
 
-    if (targetStringIdx !== stringIdx) {
-      const newFret = midiNum - STRING_MIDI[targetStringIdx];
-      if (newFret >= 0 && newFret <= 24) {
-        const note = currentResult.beats[beatIdx].notes[noteIdx];
-        if (!note.positions.some(p => p.stringIndex === targetStringIdx)) {
-          const pos = note.positions.find(p => p.stringIndex === stringIdx);
-          if (pos) { pos.stringIndex = targetStringIdx; pos.fret = newFret; }
-          renderScore(currentResult);
-        }
+    if (target) {
+      const { tb, tn, ts, newFret } = target;
+      const srcNote = currentResult.beats[beatIdx]?.notes[noteIdx];
+      const dstNote = currentResult.beats[tb]?.notes[tn];
+      // 목표 줄이 비어 있을 때만 이동 (충돌 막기)
+      if (srcNote && dstNote && !dstNote.positions.some(p => p.stringIndex === ts)) {
+        pushUndo();   // 음 이동 전 상태 보관
+        const srcMeasure = currentResult.beats[beatIdx].measureNumber;
+        // 원본에서 제거
+        srcNote.positions = srcNote.positions.filter(p => p.stringIndex !== stringIdx);
+        if (srcNote.positions.length === 0) srcNote.isRest = true;
+        // 목표에 추가
+        dstNote.positions.push({ stringIndex: ts, fret: newFret });
+        dstNote.isRest = false;
+        removeMeasureIfEmpty(srcMeasure);   // 이동으로 원래 마디가 비면 삭제
+        renderScore(currentResult);
       }
     }
 
@@ -1050,23 +1165,164 @@ function onDragUp() {
   }
 }
 
+/* ── 박자(음 길이) 지정: 음표 우클릭 메뉴 ─────────────────── */
+const DURATIONS = [
+  ['온음표',    4.0],   ['점2분음표', 3.0],   ['2분음표',  2.0],
+  ['점4분음표', 1.5],   ['4분음표',   1.0],   ['점8분음표', 0.75],
+  ['8분음표',   0.5],   ['16분음표',  0.25],  ['32분음표',  0.125],
+];
+let durMenu = null;
+
+function closeDurationMenu() {
+  if (durMenu) { durMenu.remove(); durMenu = null; }
+}
+
+function showDurationMenu(fretEl, ev) {
+  if (!editMode) return;
+  ev.preventDefault();
+  closeDurationMenu();
+
+  const beatIdx = parseInt(fretEl.dataset.beatIdx);
+  const noteIdx = parseInt(fretEl.dataset.noteIdx);
+  const note = currentResult?.beats?.[beatIdx]?.notes?.[noteIdx];
+  if (!note) return;
+
+  const cur  = note.durationInQN ?? 1.0;
+  const menu = document.createElement('div');
+  menu.className = 'dur-menu';
+
+  DURATIONS.forEach(([label, val]) => {
+    const item = document.createElement('div');
+    item.className   = 'dur-item' + (Math.abs(cur - val) < 1e-6 ? ' active' : '');
+    item.textContent = label;
+    item.addEventListener('click', () => {
+      pushUndo();                       // 박자 변경 전 상태 보관
+      note.durationInQN = val;
+      closeDurationMenu();
+      renderScore(currentResult);
+    });
+    menu.appendChild(item);
+  });
+
+  document.body.appendChild(menu);
+  // 화면 밖으로 넘치지 않게 위치 보정
+  const mw = menu.offsetWidth, mh = menu.offsetHeight;
+  let x = ev.clientX, y = ev.clientY;
+  if (x + mw > window.innerWidth)  x = window.innerWidth  - mw - 6;
+  if (y + mh > window.innerHeight) y = window.innerHeight - mh - 6;
+  menu.style.left = x + 'px';
+  menu.style.top  = y + 'px';
+  durMenu = menu;
+}
+
+// 메뉴 바깥 클릭·ESC로 닫기
+document.addEventListener('mousedown', e => {
+  if (durMenu && !durMenu.contains(e.target)) closeDurationMenu();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeDurationMenu();
+});
+
+/* ── 마디 추가: 특정 마디 뒤에 빈 마디(쉼표) 삽입 ──────────── */
+function insertMeasureAfter(measureNum) {
+  if (!currentResult?.beats) return;
+  pushUndo();
+
+  const ref    = currentResult.beats.filter(b => b.measureNumber === measureNum);
+  const tsNum  = ref.find(b => (b.timeSigNum || 0) > 0)?.timeSigNum || 4;
+  const tsDen  = ref.find(b => (b.timeSigDen || 0) > 0)?.timeSigDen || 4;
+  const beatQN = 4.0 / tsDen;   // 한 박 길이(4분음표 단위)
+
+  // 삽입 위치: measureNum의 마지막 beat 다음
+  let insertAt = currentResult.beats.length;
+  for (let i = currentResult.beats.length - 1; i >= 0; i--) {
+    if (currentResult.beats[i].measureNumber === measureNum) { insertAt = i + 1; break; }
+  }
+  // 뒤 마디 번호 +1로 밀기
+  currentResult.beats.forEach(b => { if (b.measureNumber > measureNum) b.measureNumber++; });
+  // 새 빈 마디(각 박을 쉼표로 채움)
+  const newBeats = [];
+  for (let i = 0; i < tsNum; i++) {
+    newBeats.push({
+      measureNumber: measureNum + 1,
+      beatNumber:    i + 1,
+      timeSigNum:    i === 0 ? tsNum : 0,
+      timeSigDen:    i === 0 ? tsDen : 0,
+      repeatStart:   false, repeatEnd: false,
+      notes: [{ isRest: true, droppedCount: 0, durationInQN: beatQN, positions: [] }]
+    });
+  }
+  currentResult.beats.splice(insertAt, 0, ...newBeats);
+  renderScore(currentResult);
+}
+
+/* ── 빈 마디 제거: 해당 마디에 실제 음이 하나도 없으면 마디 통째 삭제 ── */
+function removeMeasureIfEmpty(measureNum) {
+  const hasNote = currentResult.beats
+    .filter(b => b.measureNumber === measureNum)
+    .some(b => (b.notes ?? []).some(n => !n.isRest && (n.positions ?? []).length > 0));
+  if (!hasNote)
+    currentResult.beats = currentResult.beats.filter(b => b.measureNumber !== measureNum);
+}
+
 /* ── 음표 삭제 (편집 모드) ───────────────────────────────── */
 function deleteNotePosition(beatIdx, noteIdx, stringIdx) {
   const beat = currentResult?.beats?.[beatIdx];
   const note = beat?.notes?.[noteIdx];
   if (!note || !note.positions) return;
+  pushUndo();   // 삭제 전 상태 보관
   note.positions = note.positions.filter(p => p.stringIndex !== stringIdx);
   if (note.positions.length === 0) note.isRest = true;
-
-  // 해당 마디의 모든 beat에 실제 음이 하나도 없으면 마디 전체 제거
-  const measureNum = beat.measureNumber;
-  const hasAnyNote = currentResult.beats
-    .filter(b => b.measureNumber === measureNum)
-    .some(b => (b.notes ?? []).some(n => !n.isRest && (n.positions ?? []).length > 0));
-  if (!hasAnyNote)
-    currentResult.beats = currentResult.beats.filter(b => b.measureNumber !== measureNum);
-
+  removeMeasureIfEmpty(beat.measureNumber);   // 마디가 비면 통째 삭제
   renderScore(currentResult);
+}
+
+/* ── 음 추가 (편집 모드: 빈 셀 클릭) ─────────────────────── */
+function startAddNote(cellEl) {
+  if (!editMode || didDrag) return;
+  if (cellEl.dataset.editing) return;
+  cellEl.dataset.editing = '1';
+
+  const beatIdx   = parseInt(cellEl.dataset.beatIdx);
+  const noteIdx   = parseInt(cellEl.dataset.noteIdx);
+  const stringIdx = parseInt(cellEl.dataset.stringIdx);
+
+  const input = document.createElement('input');
+  input.type        = 'number';
+  input.className   = 'fret-input';
+  input.min         = 0;
+  input.max         = 24;
+  input.placeholder = '+';
+
+  const finish = () => {
+    delete cellEl.dataset.editing;
+    if (input.parentNode) input.replaceWith(cellEl);
+  };
+
+  const commit = () => {
+    const val  = parseInt(input.value);
+    const note = currentResult.beats[beatIdx]?.notes[noteIdx];
+    if (!isNaN(val) && val >= 0 && val <= 24 && note &&
+        !(note.positions ?? []).some(p => p.stringIndex === stringIdx)) {
+      input.removeEventListener('blur', commit);
+      pushUndo();   // 음 추가 전 상태 보관
+      (note.positions ??= []).push({ stringIndex: stringIdx, fret: val });
+      note.isRest = false;
+      delete cellEl.dataset.editing;
+      renderScore(currentResult);
+      return;
+    }
+    finish();
+  };
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { e.preventDefault(); input.removeEventListener('blur', commit); finish(); }
+  });
+  input.addEventListener('blur', commit);
+
+  cellEl.replaceWith(input);
+  input.focus();
 }
 
 /* ── 프렛 인라인 편집 ────────────────────────────────────── */
@@ -1093,6 +1349,7 @@ function startFretEdit(fretEl) {
       const note = currentResult.beats[beatIdx]?.notes[noteIdx];
       const pos  = note?.positions?.find(p => p.stringIndex === stringIdx);
       if (pos) {
+        if (pos.fret !== val) pushUndo();   // 값이 실제로 바뀔 때만 보관
         pos.fret = val;
         fretEl.dataset.rawFret = val;
         const display = val + transposeSteps;
