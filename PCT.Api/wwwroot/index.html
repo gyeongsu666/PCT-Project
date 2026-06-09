@@ -291,6 +291,7 @@
     border-right: 1.5px solid #737a86;
   }
   .beat-cell {
+    position: relative;
     flex: 1;
     min-width: 28px;
     height: 18px;
@@ -306,6 +307,36 @@
   .beat-cell.bar-start,
   .cell.bar-start {
     border-left: 1.5px solid #737a86;
+  }
+
+  /* 마디 추가 버튼: 마디선 위에 중앙 정렬, 마디선과 함께 이동 */
+  .bar-add-btn {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: transparent;
+    border: 1.5px solid #737a86;
+    color: #737a86;
+    font-size: 13px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+    padding: 0;
+    opacity: 0;
+    transition: opacity .15s, background .15s, color .15s;
+  }
+  .system:hover .bar-add-btn { opacity: 1; }
+  .bar-add-btn:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
   }
   /* 패딩(빈) 슬롯: 같은 item 인덱스에 있는 beat-cell/cell 모두에 적용 → 정렬 유지 */
   .beat-cell.rest-cell,
@@ -871,12 +902,26 @@ function renderScore(data) {
     const beatTrack = document.createElement('div');
     beatTrack.className = 'beat-track';
 
+    let curMeasureIdx = firstMIdx;  // 전체 measureBoundaries 기준 현재 마디 인덱스
     slice.forEach((item, idx) => {
       const cell = document.createElement('div');
       const isBarStart = item.isMeasureStart && idx > 0;
+      if (isBarStart) curMeasureIdx++;
       cell.className = 'beat-cell' + (isBarStart ? ' bar-start' : '') + (item.isPad ? ' rest-cell' : '');
+
+      // 마디선마다 "+" 버튼 삽입 (left:0 고정 → 마디선과 항상 동일 위치)
+      if (isBarStart) {
+        const addBtn = document.createElement('button');
+        addBtn.className = 'bar-add-btn';
+        addBtn.textContent = '+';
+        addBtn.title = '여기에 마디 추가';
+        const capturedIdx = curMeasureIdx;
+        addBtn.addEventListener('click', e => { e.stopPropagation(); addMeasureAt(capturedIdx); });
+        cell.appendChild(addBtn);
+      }
+
       if (item.isBeatStart) {
-        cell.textContent = item.beatNumber;
+        cell.appendChild(document.createTextNode(item.beatNumber));
         if (item.beatIdx != null) cell.dataset.beatIdx = item.beatIdx;
       }
       beatTrack.appendChild(cell);
@@ -1274,6 +1319,48 @@ function deleteNotePosition(beatIdx, noteIdx, stringIdx) {
   note.positions = note.positions.filter(p => p.stringIndex !== stringIdx);
   if (note.positions.length === 0) note.isRest = true;
   removeMeasureIfEmpty(beat.measureNumber);   // 마디가 비면 통째 삭제
+  renderScore(currentResult);
+}
+
+/* ── 마디 삽입 ──────────────────────────────────────────── */
+function addMeasureAt(insertBeforeIdx) {
+  if (!currentResult?.beats) return;
+  pushUndo();
+
+  const beats = currentResult.beats;
+  const measureNums = [...new Set(beats.map(b => b.measureNumber))].sort((a, b) => a - b);
+
+  // 인접 마디의 박자표를 복사 (없으면 4/4 기본)
+  const refNum  = measureNums[Math.min(insertBeforeIdx, measureNums.length - 1)];
+  const refBeat = beats.find(b => b.measureNumber === refNum) ?? {};
+  const timeSigNum = refBeat.timeSigNum || 4;
+  const timeSigDen = refBeat.timeSigDen || 4;
+
+  // 삽입 위치: insertBeforeIdx 번째 마디의 첫 beat 앞
+  const prevNum = insertBeforeIdx > 0 ? measureNums[insertBeforeIdx - 1] : 0;
+  const nextNum = insertBeforeIdx < measureNums.length ? measureNums[insertBeforeIdx] : null;
+  const newFrac = (prevNum + (nextNum ?? prevNum + 2)) / 2;
+
+  const newBeat = {
+    measureNumber: newFrac,
+    beatNumber: 1,
+    repeatStart: false,
+    repeatEnd: false,
+    timeSigNum,
+    timeSigDen,
+    notes: [{ isRest: true, positions: [] }]
+  };
+
+  const insertIdx = nextNum != null
+    ? beats.findIndex(b => b.measureNumber === nextNum)
+    : beats.length;
+  beats.splice(insertIdx, 0, newBeat);
+
+  // 마디 번호 1..N 으로 재정렬
+  const allNums = [...new Set(beats.map(b => b.measureNumber))].sort((a, b) => a - b);
+  const numMap  = new Map(allNums.map((n, i) => [n, i + 1]));
+  beats.forEach(b => { b.measureNumber = numMap.get(b.measureNumber); });
+
   renderScore(currentResult);
 }
 
