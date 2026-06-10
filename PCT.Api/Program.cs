@@ -559,7 +559,8 @@ app.MapPost("/api/render-tab-beats-png", async (HttpRequest request) =>
         }).ToList();
 
         var renderer = new TabImageRenderer();
-        var bytes    = renderer.RenderToPngBytes(tabBeats, payload.Title ?? "tab");
+        var transposed = ApplyTranspose(tabBeats, payload.TransposeSteps);   // 키 조정 반영
+        var bytes    = renderer.RenderToPngBytes(transposed, payload.Title ?? "tab");
         var fileName = $"{payload.Title ?? "tab"}-tab.png";
         return Results.File(bytes, "image/png", fileName);
     }
@@ -722,6 +723,7 @@ public record HistoryMeta(long Id, string FileName, string ConvertedAt, int Tran
 public class RenderBeatsPayload
 {
     public string? Title { get; set; }
+    public int TransposeSteps { get; set; }   // 키 조정(반음) — 렌더 시 프렛에 가산
     public List<BeatDto> Beats { get; set; } = [];
 }
 public class BeatDto
