@@ -411,6 +411,34 @@
   }
   .score.edit-mode .system:hover .bar-add-btn { opacity: 1; }
   .bar-add-btn:hover { background: var(--accent); border-color: var(--accent); color: white; }
+  /* 마디 삭제 × 버튼: 마디 시작 셀 위쪽에 표시 (수정 모드 hover) */
+  .bar-del-btn {
+    position: absolute;
+    left: 50%;
+    top: 1px;
+    transform: translateX(-50%);
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: transparent;
+    border: 1.5px solid var(--bad);
+    color: var(--bad);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 21;
+    padding: 0;
+    opacity: 0;
+    transition: opacity .15s, background .15s, color .15s;
+  }
+  .score.edit-mode .system:hover .bar-del-btn { opacity: 1; }
+  .bar-del-btn:hover { background: var(--bad); border-color: var(--bad); color: white; }
+  /* 마디 범위 선택 하이라이트 (복사용) */
+  .cell.sel-measure, .beat-cell.sel-measure { background: rgba(63,140,255,.16); }
+  .score.edit-mode .track { cursor: default; }
   .fret-input {
     width: 36px;
     padding: 2px 4px;
@@ -571,6 +599,9 @@ let didDrag   = false;   // 드래그 완료 직후 click 이벤트 무시용
 let pendingDrag = null;  // 드래그 상태
 let undoStack = [];      // 편집 되돌리기 스택 (beats 스냅샷)
 const UNDO_LIMIT = 50;   // 되돌리기 최대 단계
+let selectedMeasures = new Set();  // 드래그로 선택된 마디 번호들
+let measureClipboard = null;       // 복사된 마디들(beats 깊은 복사)
+let selDrag = null;                // 마디 범위 드래그 선택 상태
 
 // 기록 상태
 let historyItems = [];
@@ -616,21 +647,17 @@ function updateKeyDisplay() {
   $('keyResetBtn').disabled = v === 0;
 }
 
-$('keyUpBtn').addEventListener('click', () => {
-  transposeSteps++;
+// 키 조정 후처리: 화면 갱신 + PNG 캐시 무효화(+PNG 탭이면 즉시 재생성)
+function onTransposeChanged() {
   updateKeyDisplay();
-  if (currentResult) renderScore(currentResult);
-});
-$('keyDownBtn').addEventListener('click', () => {
-  transposeSteps--;
-  updateKeyDisplay();
-  if (currentResult) renderScore(currentResult);
-});
-$('keyResetBtn').addEventListener('click', () => {
-  transposeSteps = 0;
-  updateKeyDisplay();
-  if (currentResult) renderScore(currentResult);
-});
+  if (!currentResult) return;
+  renderScore(currentResult);
+  if (tabPngUrl) { URL.revokeObjectURL(tabPngUrl); tabPngUrl = null; }  // 캐시된 PNG 폐기
+  if ($('pngView').classList.contains('active')) loadPngPreview();      // 보고 있으면 새로 생성
+}
+$('keyUpBtn').addEventListener('click',    () => { transposeSteps++;     onTransposeChanged(); });
+$('keyDownBtn').addEventListener('click',  () => { transposeSteps--;     onTransposeChanged(); });
+$('keyResetBtn').addEventListener('click', () => { transposeSteps = 0;   onTransposeChanged(); });
 
 /* ── 슬라이더 ────────────────────────────────────────────── */
 for (const [slider, label, format] of [
@@ -911,6 +938,18 @@ function renderScore(data) {
           cell.appendChild(addBtn);
         }
       }
+      // 각 마디 시작 셀(첫 마디 포함)에 × 삭제 버튼
+      if (item.isBeatStart && (idx === 0 || item.isMeasureStart) && item.beatIdx >= 0) {
+        const mNum = data.beats?.[item.beatIdx]?.measureNumber;
+        if (mNum != null) {
+          const delBtn = document.createElement('button');
+          delBtn.className = 'bar-del-btn';
+          delBtn.textContent = '×';
+          delBtn.title = '이 마디 삭제';
+          delBtn.addEventListener('click', e => { e.stopPropagation(); deleteMeasure(mNum); });
+          cell.appendChild(delBtn);
+        }
+      }
       beatTrack.appendChild(cell);
     });
 
@@ -982,6 +1021,7 @@ function renderScore(data) {
   showLoading(false);
   $('dropZone').style.display = 'none';
   area.style.display = 'block';
+  applySelectionHighlight();   // 렌더 후 마디 선택 하이라이트 복원
 }
 
 /* ── 편집 모드 토글 ──────────────────────────────────────── */
@@ -1002,6 +1042,7 @@ function toggleEditMode() {
 function exitEditMode() {
   editMode = false;
   undoStack = [];
+  clearSelection();   // 편집 종료 시 마디 선택 해제
   $('editBtn').textContent = '수정';
   $('editBtn').classList.remove('primary');
   $('scoreArea').classList.remove('edit-mode');
@@ -1038,7 +1079,7 @@ async function saveEditedPng() {
     const res = await fetch('/api/render-tab-beats-png', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: currentResult.title || 'tab', beats: currentResult.beats })
+      body: JSON.stringify({ title: currentResult.title || 'tab', transposeSteps, beats: currentResult.beats })
     });
     if (!res.ok) throw new Error(await res.text());
 
@@ -1187,6 +1228,55 @@ function closeDurationMenu() {
   if (durMenu) { durMenu.remove(); durMenu = null; }
 }
 
+// 마디의 박자표를 carry-forward로 계산해 총 길이(QN)를 반환 (4/4=4, 2/4=2, 6/8=3)
+function measureTimeSig(measureNum) {
+  let num = 4, den = 4;
+  for (const b of currentResult.beats) {
+    if (b.measureNumber <= measureNum) {
+      if ((b.timeSigNum || 0) > 0) num = b.timeSigNum;
+      if ((b.timeSigDen || 0) > 0) den = b.timeSigDen;
+    }
+  }
+  return num * 4 / den;
+}
+
+// 박자(음 길이) 변경 + 마디 정합성 처리
+//  - 초과: 변경 막고 안내   - 부족: 마디 끝에 자동 쉼표(isAutoRest)로 채움
+function applyDurationChange(beatIdx, noteIdx, newDur) {
+  const beat = currentResult.beats[beatIdx];
+  const note = beat?.notes?.[noteIdx];
+  if (!note) return;
+
+  const measureNum = beat.measureNumber;
+  const measureQN  = measureTimeSig(measureNum);
+  const mBeats     = currentResult.beats.filter(b => b.measureNumber === measureNum);
+
+  // 변경값 적용 가정 + 자동 쉼표 제외한 마디 총 길이
+  let sum = 0;
+  for (const b of mBeats)
+    for (let i = 0; i < b.notes.length; i++) {
+      const n = b.notes[i];
+      if (n.isAutoRest) continue;
+      sum += (b === beat && i === noteIdx) ? newDur : (n.durationInQN ?? 1);
+    }
+
+  if (sum > measureQN + 1e-6) {                 // 초과 → 막기
+    setStatus(`마디 길이(${measureQN}박)를 초과해 변경할 수 없습니다`, 'bad');
+    return;
+  }
+
+  pushUndo();
+  note.durationInQN = newDur;
+  // 기존 자동 쉼표 모두 제거 후, 부족분만큼 다시 채움
+  for (const b of mBeats) b.notes = b.notes.filter(n => !n.isAutoRest);
+  const shortBy = measureQN - sum;
+  if (shortBy > 1e-6) {
+    const last = currentResult.beats.filter(b => b.measureNumber === measureNum).pop();
+    last.notes.push({ isRest: true, isAutoRest: true, droppedCount: 0, durationInQN: shortBy, positions: [] });
+  }
+  renderScore(currentResult);
+}
+
 function showDurationMenu(fretEl, ev) {
   if (!editMode) return;
   ev.preventDefault();
@@ -1206,10 +1296,8 @@ function showDurationMenu(fretEl, ev) {
     item.className   = 'dur-item' + (Math.abs(cur - val) < 1e-6 ? ' active' : '');
     item.textContent = label;
     item.addEventListener('click', () => {
-      pushUndo();                       // 박자 변경 전 상태 보관
-      note.durationInQN = val;
+      applyDurationChange(beatIdx, noteIdx, val);   // 마디 정합성(초과 막기·자동 쉼표) 포함
       closeDurationMenu();
-      renderScore(currentResult);
     });
     menu.appendChild(item);
   });
@@ -1265,6 +1353,121 @@ function insertMeasureAfter(measureNum) {
   currentResult.beats.splice(insertAt, 0, ...newBeats);
   renderScore(currentResult);
 }
+
+/* ── 마디 삭제: 해당 마디를 통째로 제거하고 뒤 마디 번호를 당겨온다 ── */
+function deleteMeasure(measureNum) {
+  if (!currentResult?.beats) return;
+  const measureNums = new Set(currentResult.beats.map(b => b.measureNumber));
+  if (measureNums.size <= 1) return;   // 마지막 한 마디는 남겨 둠(빈 악보 방지)
+  pushUndo();
+  currentResult.beats = currentResult.beats.filter(b => b.measureNumber !== measureNum);
+  currentResult.beats.forEach(b => { if (b.measureNumber > measureNum) b.measureNumber--; });   // 뒤 마디 당김
+  clearSelection();
+  renderScore(currentResult);
+}
+
+/* ── 마디 범위 선택 + 복사/붙여넣기 ──────────────────────── */
+// 마우스 좌표 아래 셀의 마디 번호
+function measureAtPoint(x, y) {
+  const cell = document.elementFromPoint(x, y)?.closest('[data-beat-idx]');
+  if (!cell) return null;
+  return currentResult?.beats?.[parseInt(cell.dataset.beatIdx)]?.measureNumber ?? null;
+}
+
+// 선택 마디 셀에 하이라이트 반영 (renderScore 끝과 드래그 중 호출)
+function applySelectionHighlight() {
+  document.querySelectorAll('.sel-measure').forEach(c => c.classList.remove('sel-measure'));
+  if (selectedMeasures.size === 0) return;
+  document.querySelectorAll('#scoreArea [data-beat-idx]').forEach(cell => {
+    const mn = currentResult?.beats?.[parseInt(cell.dataset.beatIdx)]?.measureNumber;
+    if (selectedMeasures.has(mn)) cell.classList.add('sel-measure');
+  });
+}
+
+function clearSelection() {
+  if (selectedMeasures.size === 0) return;
+  selectedMeasures.clear();
+  applySelectionHighlight();
+}
+
+// 빈 곳에서 드래그 시작 → 마디 범위 선택 (음표 fret 드래그는 이동이므로 제외)
+$('scoreArea').addEventListener('mousedown', e => {
+  if (!editMode || e.button !== 0) return;
+  if (e.target.closest('.fret, .bar-add-btn, .bar-del-btn, .fret-input, .dur-menu')) return;
+  const startM = measureAtPoint(e.clientX, e.clientY);
+  if (startM == null) return;
+  selDrag = { startM, startX: e.clientX, startY: e.clientY, moved: false };
+  document.addEventListener('mousemove', onSelMove);
+  document.addEventListener('mouseup',   onSelUp);
+});
+
+function onSelMove(e) {
+  if (!selDrag) return;
+  if (!selDrag.moved) {
+    if (Math.hypot(e.clientX - selDrag.startX, e.clientY - selDrag.startY) < 6) return;
+    selDrag.moved = true;
+  }
+  const m = measureAtPoint(e.clientX, e.clientY);
+  if (m == null) return;
+  const lo = Math.min(selDrag.startM, m), hi = Math.max(selDrag.startM, m);
+  selectedMeasures = new Set();
+  for (let n = lo; n <= hi; n++) selectedMeasures.add(n);
+  applySelectionHighlight();
+}
+
+function onSelUp() {
+  document.removeEventListener('mousemove', onSelMove);
+  document.removeEventListener('mouseup',   onSelUp);
+  if (selDrag?.moved) { didDrag = true; setTimeout(() => { didDrag = false; }, 0); }  // 드래그 후 click(음추가) 무시
+  selDrag = null;
+}
+
+// 복사: 선택된 마디들을 깊은 복사로 클립보드에
+function copySelection() {
+  if (selectedMeasures.size === 0) return;
+  measureClipboard = currentResult.beats
+    .filter(b => selectedMeasures.has(b.measureNumber))
+    .map(b => JSON.parse(JSON.stringify(b)));
+  const n = new Set(measureClipboard.map(b => b.measureNumber)).size;
+  setStatus(`${n}개 마디 복사됨`, 'ok');
+}
+
+// 붙여넣기: 복사한 마디들을 선택 영역 바로 뒤에 복제 삽입
+function pasteSelection() {
+  if (!measureClipboard?.length || selectedMeasures.size === 0) return;
+  pushUndo();
+  const sel    = [...selectedMeasures].sort((a, b) => a - b);
+  const afterM = sel[sel.length - 1];                       // 선택 마지막 마디 뒤에 삽입
+  const srcNums = [...new Set(measureClipboard.map(b => b.measureNumber))].sort((a, b) => a - b);
+  const count   = srcNums.length;
+
+  currentResult.beats.forEach(b => { if (b.measureNumber > afterM) b.measureNumber += count; });  // 뒤 마디 밀기
+  const remap = {};
+  srcNums.forEach((sn, i) => remap[sn] = afterM + 1 + i);
+  const inserted = measureClipboard.map(b => {
+    const nb = JSON.parse(JSON.stringify(b));
+    nb.measureNumber = remap[b.measureNumber];
+    return nb;
+  });
+  let insertAt = currentResult.beats.length;
+  for (let i = currentResult.beats.length - 1; i >= 0; i--) {
+    if (currentResult.beats[i].measureNumber === afterM) { insertAt = i + 1; break; }
+  }
+  currentResult.beats.splice(insertAt, 0, ...inserted);
+  selectedMeasures = new Set(Object.values(remap));         // 선택을 붙여넣은 마디로 이동
+  renderScore(currentResult);
+  setStatus(`${count}개 마디 붙여넣음`, 'ok');
+}
+
+// Ctrl+C / Ctrl+V / Esc (편집 모드, 프렛 입력창 제외)
+document.addEventListener('keydown', e => {
+  if (!editMode) return;
+  if (document.activeElement?.classList?.contains('fret-input')) return;
+  const k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && k === 'c') { copySelection(); }
+  else if ((e.ctrlKey || e.metaKey) && k === 'v') { e.preventDefault(); pasteSelection(); }
+  else if (e.key === 'Escape') { clearSelection(); }
+});
 
 /* ── 빈 마디 제거: 해당 마디에 실제 음이 하나도 없으면 마디 통째 삭제 ── */
 function removeMeasureIfEmpty(measureNum) {
@@ -1401,8 +1604,8 @@ function updateStats(data) {
 
 /* ── PNG 미리보기 ────────────────────────────────────────── */
 async function loadPngPreview() {
-  // 기록에서 불러온 경우 저장된 PNG 바로 표시
-  if (currentHistoryPngUrl) {
+  // 기록 PNG: 키 조정이 없을 때만 저장본 그대로 사용
+  if (currentHistoryPngUrl && transposeSteps === 0) {
     $('pngLoading').style.display = 'none';
     $('pngEmpty').style.display = 'none';
     $('tabPreview').src = currentHistoryPngUrl;
@@ -1415,9 +1618,21 @@ async function loadPngPreview() {
   $('tabPreview').style.display = 'none';
 
   try {
-    const res = await fetch('/api/render-png', { method: 'POST', body: formData() });
-    if (!res.ok) throw new Error(await res.text());
-    const blob = await res.blob();
+    let blob;
+    if (currentFile) {
+      // 원본 파일 재변환 (formData에 transposeSteps 포함)
+      const res = await fetch('/api/render-png', { method: 'POST', body: formData() });
+      if (!res.ok) throw new Error(await res.text());
+      blob = await res.blob();
+    } else if (currentResult?.beats) {
+      // 기록/편집 결과: beats + 키 조정으로 렌더
+      const res = await fetch('/api/render-tab-beats-png', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: currentResult.title || 'tab', transposeSteps, beats: currentResult.beats })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      blob = await res.blob();
+    } else { $('pngLoading').style.display = 'none'; return; }
     if (tabPngUrl) URL.revokeObjectURL(tabPngUrl);
     tabPngUrl = URL.createObjectURL(blob);
     $('tabPreview').src = tabPngUrl;
@@ -1432,8 +1647,8 @@ async function loadPngPreview() {
 
 /* ── PNG 저장 ────────────────────────────────────────────── */
 async function downloadPng() {
-  // 기록에서 불러온 경우
-  if (currentHistoryPngUrl) {
+  // 기록 PNG는 키 조정이 없을 때만 저장본 다운로드
+  if (currentHistoryPngUrl && transposeSteps === 0) {
     const a = document.createElement('a');
     a.href = currentHistoryPngUrl;
     a.download = (currentResult?.title || 'tab') + '-tab.png';
