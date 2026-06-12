@@ -24,16 +24,19 @@ PCT-Web/
 ## 실행 방법
 
 ### 요구사항
-- .NET 8.0 SDK (https://dotnet.microsoft.com/download)
+- .NET 10 SDK (https://dotnet.microsoft.com/download)
+- (선택) Audiveris — 악보 이미지/PDF 인식(OMR) 기능에만 필요. 설치·경로 설정은 `실행방법.txt` 참고
 
 ### 실행
 
 ```bash
-cd PCT-Web/PCT.Api
+cd PCT.Api
 dotnet run
 ```
 
 브라우저에서 http://localhost:5000 접속
+
+> 자세한 설치·실행·사용 안내는 프로젝트 루트의 **실행방법.txt** 참고
 
 ## API 엔드포인트
 
